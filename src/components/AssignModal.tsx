@@ -336,6 +336,11 @@ export default function AssignModal({
   const actionLabel = hasOwner ? "Reassign" : "Distribute";
 
   const [backToBack, setBackToBack] = useState<boolean>(lockedMode ?? false);
+  // 第一版只支持盲检（独立双盲）。明检已下线，不再提供选项。
+  const bMode = "blind" as const;
+  // First-time distribution locks the task into a mode (Normal / Back-to-Back)
+  // for good. Ask for a second confirmation before that happens.
+  const [confirming, setConfirming] = useState(false);
 
   const [aRows, setARows] = useState<Row[]>(() =>
     session?.annotator ? [{ name: session.annotator, quantity: "1" }, ...emptyRows(2)] : emptyRows(3),
@@ -379,6 +384,24 @@ export default function AssignModal({
     : backToBack
       ? pairAllocations.length > 0
       : aAllocations.length > 0;
+
+  // Only the first distribution locks the mode; Reassign keeps the existing one.
+  const needsModeLockConfirm = lockedMode === undefined;
+
+  const doConfirm = () => {
+    onConfirm(
+      {
+        aEmail: backToBack ? pairAllocations[0]?.aName ?? "" : aAllocations[0]?.name ?? "",
+        bEmail: backToBack ? pairAllocations[0]?.bName : undefined,
+        backToBackEnabled: backToBack,
+        bMode: backToBack ? bMode : undefined,
+        aDistribution: backToBack ? undefined : aAllocations,
+        pairDistribution: backToBack ? pairAllocations : undefined,
+      },
+      isReassign,
+    );
+    onClose();
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
@@ -440,7 +463,7 @@ export default function AssignModal({
 
           <p className="text-xs text-subtle">
             {backToBack
-              ? "每行「A ｜ B ｜ 数量」：该行的数量条 case 会同时分给这行的 A（case 上层）和 B（case 下拉），两人做 back-to-back。A、B 无需达成一致，最终由 C overwrite。"
+              ? "每行「A ｜ B ｜ 数量」：该行 case 同时分给 A、B 做盲检。两人一致自动进池；不一致标「待拉齐」，由 QA 在 Detail 里快速拉齐后进池。之后 QC 按比例抽样。"
               : "分配 Annotators。评完后进入 QC 可抽样。"}
           </p>
         </div>
@@ -460,17 +483,11 @@ export default function AssignModal({
           </button>
           <button
             onClick={() => {
-              onConfirm(
-                {
-                  aEmail: backToBack ? pairAllocations[0]?.aName ?? "" : aAllocations[0]?.name ?? "",
-                  bEmail: backToBack ? pairAllocations[0]?.bName : undefined,
-                  backToBackEnabled: backToBack,
-                  aDistribution: backToBack ? undefined : aAllocations,
-                  pairDistribution: backToBack ? pairAllocations : undefined,
-                },
-                isReassign,
-              );
-              onClose();
+              if (needsModeLockConfirm) {
+                setConfirming(true);
+              } else {
+                doConfirm();
+              }
             }}
             disabled={!canConfirm}
             className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
@@ -479,6 +496,43 @@ export default function AssignModal({
           </button>
         </div>
       </div>
+
+      {confirming && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setConfirming(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl border border-line bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4">
+              <h3 className="text-base font-semibold text-ink">确认锁定标注模式？</h3>
+              <p className="mt-2 text-sm text-subtle">
+                该 task 将锁定为
+                <span className="font-semibold text-ink">
+                  {backToBack ? "「Back-to-Back（双人同评）」" : "「Normal（单人评）」"}
+                </span>
+                模式。一旦确认，模式将无法更改，后续 Batch Assign 只能按此模式追加分配。
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-4">
+              <button
+                onClick={() => setConfirming(false)}
+                className="rounded-md border border-line px-4 py-2 text-sm font-medium text-subtle hover:bg-gray-50"
+              >
+                返回修改
+              </button>
+              <button
+                onClick={doConfirm}
+                className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+              >
+                确认锁定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

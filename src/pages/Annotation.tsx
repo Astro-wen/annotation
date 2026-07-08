@@ -7,7 +7,8 @@ import ChatThread from "@/components/ChatThread";
 import { PanelSection, ScoreRow, Collapsible } from "@/components/ScorePanel";
 import { getConversation } from "@/mock/conversation";
 import { type RubricDimension } from "@/mock/settings";
-import { useCurrentUserStore } from "@/lib/currentUser";
+import { useCurrentUserStore, isPrivileged, isVendor } from "@/lib/currentUser";
+import { isAssignedTo } from "@/lib/access";
 import { useSessionStore } from "@/store/sessionStore";
 import { useRubricStore } from "@/store/rubricStore";
 import { computeActorScore } from "@/lib/scoring";
@@ -57,8 +58,10 @@ export default function Annotation() {
 
   // Prefill scores:
   //  - View mode: show the authoritative result already on the row (read-only).
-  //  - A / B / C all annotate on a blank slate — no prefill from A/B, so C is
-  //    not anchored by the results being reviewed.
+  //  - Otherwise A / B / C annotate on a blank slate — no prefill. Even in open
+  //    review (明检), B does NOT prefill A's result: B judges from scratch (with
+  //    A shown as read-only reference) so B is not anchored to A's scores.
+  const openReview = reviewRole === "B" && flow?.bMode === "open";
   const seedActor = useMemo<ActorState>(() => {
     let src: ActorScore | undefined;
     if (viewMode) {
@@ -66,32 +69,30 @@ export default function Annotation() {
     }
     if (!src) return emptyActor;
     return { scores: { ...src.scores }, reasons: { ...(src.reasons ?? {}) } };
-  }, [viewMode, reviewRole, flow, session]);
+  }, [viewMode, flow, session]);
 
   // Lock (read-only) rules:
   //  - View mode is always read-only.
-  //  - A can keep editing their own result until a 2nd reviewer (B) submits or
-  //    the case is finalized by C; after that A's result is frozen.
-  //  - B is locked once they themselves have submitted.
+  //  - A / B can keep editing their own result until the case is finalized by C;
+  //    submitting no longer freezes them (they may revise before QC定案).
+  //  - Open review (明检) exception: once B has submitted, B is the final say
+  //    (B overwrote A), so A is locked — letting A re-edit would re-introduce an
+  //    A/B mismatch that the "以 B 为准" rule is meant to avoid.
   //  - C is never locked here (C is the reviewer who overwrites).
+  //  - 权限账号例外：即使 case 已经 QC 定案（Final Result Ready），权限账号仍然
+  //    可以回来修改 A / B / C 的结果，所以它不受 isFinal 和明检 A 锁定的限制。
+  const privileged = isPrivileged(currentEmail);
   const isFinal = flow?.currentState === "Final Result Ready";
-  const bSubmitted = flow?.bResultStatus === "Submitted";
-  const lockedForA =
-    reviewRole === "A" &&
-    (bSubmitted || isFinal) &&
-    (flow?.aAnnotator === currentEmail || flow?.aAnnotator === undefined);
-  const lockedForB =
-    reviewRole === "B" &&
-    flow?.bResultStatus === "Submitted" &&
-    (flow?.bAnnotator === currentEmail || flow?.bAnnotator === undefined);
-  const locked = viewMode || lockedForA || lockedForB;
+  const openLockedA =
+    !privileged &&
+    reviewRole === "A" && flow?.bMode === "open" && flow?.bResultStatus === "Submitted";
+  const locked =
+    viewMode || openLockedA || (!privileged && (reviewRole === "A" || reviewRole === "B") && isFinal);
 
-  // Anti-self-review:
-  //  - C should not review a session they annotated (A or B) themselves.
-  //  - B (back-to-back review) should not review their own A annotation.
-  const selfReviewBlocked =
-    (reviewRole === "C" && (flow?.aAnnotator === currentEmail || flow?.bAnnotator === currentEmail)) ||
-    (reviewRole === "B" && flow?.aAnnotator === currentEmail);
+  // Open review (明检) needs A's result to prefill/校正. If B opens it before A
+  // has submitted the first round, there is nothing to review — block作答 and
+  // tell B to wait for A rather than let them fill a misleading blank slate.
+  const openReviewNotReady = openReview && flow?.aResultStatus !== "Submitted";
 
   const [infoOpen, setInfoOpen] = useState(true);
   const [bot, setBot] = useState<ActorState>(seedActor);
@@ -120,16 +121,36 @@ export default function Annotation() {
     );
   }
 
-  if (selfReviewBlocked) {
+  // 供应商权限隔离 —— 标注页访问校验：供应商只能打开分配给自己的 case。即使拿到
+  // 直链，未分配给自己的 case 也直接拦在门口（前端硬校验）。管理员 / QA 不受限。
+  if (isVendor(currentEmail) && !isAssignedTo(currentEmail, session, flow)) {
     return (
       <Layout>
         <div className="mx-auto max-w-lg p-10 text-center">
           <AlertOctagon className="mx-auto mb-3 h-8 w-8 text-danger" />
-          <h2 className="text-base font-semibold text-ink">Self-review not allowed</h2>
+          <h2 className="text-base font-semibold text-ink">无权访问该 case</h2>
           <p className="mt-2 text-sm text-subtle">
-            {reviewRole === "B"
-              ? "You annotated this session as A, so you cannot review it as B. Another reviewer must do the second-round review."
-              : "You annotated this session as A/B, so you cannot review it as C. Please assign another reviewer."}
+            这条 case 没有分配给你。为满足供应商数据隔离要求，你只能查看和标注分配给自己的 case。如需处理请联系管理员分配。
+          </p>
+          <button
+            onClick={() => navigate(-1)}
+            className="mt-4 rounded-md border border-line px-4 py-2 text-sm font-medium text-ink hover:bg-page"
+          >
+            Back
+          </button>
+        </div>
+      </Layout>
+    );
+  }
+
+  if (openReviewNotReady) {
+    return (
+      <Layout>
+        <div className="mx-auto max-w-lg p-10 text-center">
+          <AlertOctagon className="mx-auto mb-3 h-8 w-8 text-warning" />
+          <h2 className="text-base font-semibold text-ink">等待 A 完成第一轮标注</h2>
+          <p className="mt-2 text-sm text-subtle">
+            这是明检模式，B 需要在 A 的结果上直接判定 / 校正。A 还没提交第一轮标注，暂时没有可校正的内容。请等 A 提交后再来。
           </p>
           <button
             onClick={() => navigate(-1)}
@@ -213,7 +234,8 @@ export default function Annotation() {
       return;
     }
     if (reviewRole === "C") {
-      navigate("/audit");
+      // Return to the owning task's Detail page (the case's C/QC row).
+      navigate(session.taskId ? `/task/${session.taskId}` : "/home");
       return;
     }
     navigate(-1);
@@ -236,7 +258,7 @@ export default function Annotation() {
               <AlertOctagon className="h-3.5 w-3.5" />
               {viewMode
                 ? "View only"
-                : "Submitted · read-only (only C can overwrite)"}
+                : "Finalized · read-only (C has overwritten this case)"}
             </span>
           )}
           {showHuman && (
@@ -293,14 +315,31 @@ export default function Annotation() {
               </dl>
             </Collapsible>
 
-            {/* QC reference: C annotates on a blank slate, but can see A (and B,
-                if double-blind) results here as read-only reference. */}
+            {/* QC reference: C annotates on a blank slate, but can see the
+                annotation result here as read-only reference. By the time a case
+                reaches QC, A and B are one agreed result (明检 overwrites A with
+                B; 盲检 only pools after A/B are reconciled equal), so we show a
+                single "A and B Result" column instead of a fake A/B diff. */}
             {reviewRole === "C" && (flow?.aResult || flow?.bResult) && (
+              <ReferencePanel
+                a={(flow?.bResultStatus === "Submitted" ? flow?.bResult?.bot : undefined) ?? flow?.aResult?.bot}
+                aWho={
+                  flow?.bResultStatus === "Submitted"
+                    ? [flow?.aAnnotator, flow?.bAnnotator].filter(Boolean).join(" / ")
+                    : flow?.aAnnotator
+                }
+                label={flow?.bResultStatus === "Submitted" ? "A and B Result" : "A Result"}
+                sqsDims={sqsDims}
+                uesDims={uesDims}
+              />
+            )}
+
+            {/* Open review (明检): B reviews A directly. A's result is prefilled
+                into B's panel; show A here as read-only reference too. */}
+            {openReview && flow?.aResult && (
               <ReferencePanel
                 a={flow?.aResult?.bot}
                 aWho={flow?.aAnnotator}
-                b={flow?.bResultStatus === "Submitted" ? flow?.bResult?.bot : undefined}
-                bWho={flow?.bAnnotator}
                 sqsDims={sqsDims}
                 uesDims={uesDims}
               />
@@ -418,15 +457,13 @@ export default function Annotation() {
 function ReferencePanel({
   a,
   aWho,
-  b,
-  bWho,
+  label = "A Result",
   sqsDims,
   uesDims,
 }: {
   a?: ActorScore;
   aWho?: string;
-  b?: ActorScore;
-  bWho?: string;
+  label?: string;
   sqsDims: RubricDimension[];
   uesDims: RubricDimension[];
 }) {
@@ -435,7 +472,7 @@ function ReferencePanel({
   const cell = (v?: number) =>
     v === undefined ? <span className="text-muted">—</span> : <span className="font-mono">{v}</span>;
   return (
-    <PanelSection title="Reference: A / B Result" right={<Badge tone="neutral">QC read-only</Badge>}>
+    <PanelSection title={`Reference: ${label}`} right={<Badge tone="neutral">QC read-only</Badge>}>
       <button
         onClick={() => setOpen((o) => !o)}
         className="mb-2 text-xs font-medium text-brand hover:underline"
@@ -448,8 +485,7 @@ function ReferencePanel({
             <thead>
               <tr className="border-b border-line bg-page text-left text-subtle">
                 <th className="px-3 py-2 font-medium">Dimension</th>
-                <th className="px-3 py-2 font-medium">A{aWho ? ` · ${aWho}` : ""}</th>
-                {b && <th className="px-3 py-2 font-medium">B{bWho ? ` · ${bWho}` : ""}</th>}
+                <th className="px-3 py-2 font-medium">{label}{aWho ? ` · ${aWho}` : ""}</th>
               </tr>
             </thead>
             <tbody>
@@ -457,13 +493,11 @@ function ReferencePanel({
                 <tr key={d.key} className="border-b border-line last:border-0">
                   <td className="px-3 py-2 text-ink">{d.dimension}</td>
                   <td className="px-3 py-2">{cell(a?.scores?.[d.key])}</td>
-                  {b && <td className="px-3 py-2">{cell(b.scores?.[d.key])}</td>}
                 </tr>
               ))}
               <tr className="bg-page font-medium">
                 <td className="px-3 py-2 text-ink">User Satisfaction</td>
                 <td className="px-3 py-2">{cell(a?.userSatisfaction)}</td>
-                {b && <td className="px-3 py-2">{cell(b.userSatisfaction)}</td>}
               </tr>
             </tbody>
           </table>

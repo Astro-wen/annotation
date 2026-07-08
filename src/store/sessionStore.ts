@@ -8,6 +8,8 @@ import type {
 } from "@/mock/types";
 import { sessions as defaultSessions } from "@/mock/sessions";
 import { reviewFlows as defaultReviewFlows } from "@/mock/reviewFlow";
+import { diffDims } from "@/lib/diff";
+import { isPrivileged } from "@/lib/currentUser";
 
 const STORAGE_KEY = "bytehi-cycle-state-v8";
 
@@ -68,6 +70,8 @@ export interface AssignConfig {
   aEmail: string;
   bEmail?: string;
   backToBackEnabled: boolean;
+  /** Second-round style for B: blind double-blind (default) or open review (明检). */
+  bMode?: "blind" | "open";
   aDistribution?: QaAllocation[];
   /** Back-to-back pairings (A | B | quantity per row). */
   pairDistribution?: QaPair[];
@@ -78,6 +82,8 @@ export interface SamplingConfig {
   qaEmail?: string;
   method: "percentage" | "absolute";
   value: number;
+  /** 指派给这批抽中 case 的 C 复核人（管理员 / QA）。 */
+  cReviewer?: string;
 }
 
 interface SessionStore {
@@ -103,6 +109,9 @@ interface SessionStore {
     operator: string,
     role?: ReviewRole,
   ) => void;
+  /** Resolve an A/B double-blind diff: QA picks the final per-dimension result;
+   * it becomes both A and B baseline, and the case enters the QC sampling pool. */
+  reconcileDiff: (sessionId: string, result: AnnotationResult, operator: string) => void;
   startSampling: (taskId: string, config: SamplingConfig, operator: string) => number;
 }
 
@@ -135,12 +144,24 @@ export const useSessionStore = create<SessionStore>((set, get) => {
   const norm = (v?: string) => (v ?? "").trim().toLowerCase();
   const samePerson = (a?: string, b?: string) => !!a && !!b && norm(a) === norm(b);
 
+  // Treat a case as Back-to-Back if the flag is on OR any B-side trace exists.
+  // A case that once had a B reviewer (assignee / annotator / submitted result)
+  // must never be judged as "Normal" just because backToBackEnabled got flipped
+  // or lost — otherwise A submitting alone would pool it into QC while the B
+  // half still lingers (a "half normal, half B2B" dirty state).
+  const isBackToBack = (flow: ReviewFlow): boolean =>
+    flow.backToBackEnabled === true ||
+    !!flow.bAssignee ||
+    !!flow.bAnnotator ||
+    !!flow.bResultStatus ||
+    !!flow.bResult;
+
   // A case is "complete" (ready to enter the QC sampling pool) when:
   //  - Normal: A submitted.
   //  - Back-to-Back: BOTH A and B submitted (double-blind needs both halves).
   const isComplete = (flow: ReviewFlow): boolean => {
     if (flow.aResultStatus !== "Submitted") return false;
-    if (flow.backToBackEnabled) return flow.bResultStatus === "Submitted";
+    if (isBackToBack(flow)) return flow.bResultStatus === "Submitted";
     return true;
   };
 
@@ -341,6 +362,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             aAssignee: aEmail,
             bAssignee: bEmail,
             backToBackEnabled: backToBack,
+            bMode: backToBack ? config.bMode ?? "blind" : undefined,
             aAnnotator: undefined,
             bAnnotator: undefined,
             cReviewer: undefined,
@@ -370,18 +392,37 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             .map((d) => `${d.name}×${d.quantity}`)
             .join(", ")}] · ${count} case(s)`;
 
+      // Assignees named on the action label (deduped) so the log reads
+      // "Batch Assign to <who>" at a glance.
+      const assignees = Array.from(
+        new Set(
+          assignedLog.flatMap((a) => (a.bEmail ? [a.aEmail, a.bEmail] : [a.aEmail])),
+        ),
+      );
+      const assigneeLabel =
+        assignees.length === 0
+          ? ""
+          : assignees.length <= 2
+            ? assignees.join(", ")
+            : `${assignees[0]} +${assignees.length - 1}`;
+
       persist({
         sessions,
         reviewFlows,
         logs: [
           ...get().logs,
-          log({ sessionId: taskId, operator, action: "Batch Assign", detail }),
+          log({
+            sessionId: taskId,
+            operator,
+            action: assigneeLabel ? `Batch Assign to ${assigneeLabel}` : "Batch Assign",
+            detail,
+          }),
           // One entry per assigned case, so the Detail activity log shows it too.
           ...assignedLog.map((a) =>
             log({
               sessionId: a.sessionId,
               operator,
-              action: "Batch Assign",
+              action: a.bEmail ? `Batch Assign to ${a.aEmail}, ${a.bEmail}` : `Batch Assign to ${a.aEmail}`,
               detail: a.bEmail
                 ? `Assigned A=${a.aEmail}, B=${a.bEmail} (Back-to-Back)`
                 : `Assigned A=${a.aEmail}`,
@@ -415,7 +456,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
           reviewFlows: patchFlow(sessionId, { bAssignee: qaName }),
           logs: [
             ...get().logs,
-            log({ sessionId, operator, action: "Assign B Reviewer", detail: `B = ${qaName}` }),
+            log({ sessionId, operator, action: `Assign B to ${qaName}`, detail: `B = ${qaName}` }),
           ],
         });
         return;
@@ -449,7 +490,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
           : get().reviewFlows,
         logs: [
           ...get().logs,
-          log({ sessionId, operator, action: "Assign QA Owner", detail: `QA owner = ${qaName}` }),
+          log({ sessionId, operator, action: `Assign to ${qaName}`, detail: `QA owner = ${qaName}` }),
         ],
       });
     },
@@ -505,21 +546,37 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       };
 
       if (role === "A") {
-        // First-round annotation. A case is "completed / ready for C sampling"
-        // once A submits. Preserve the pre-assigned mode (Back-to-Back stays
-        // Back-to-Back) — submitting A must never downgrade a B2B case.
+        // Open review (明检): B grades on top of A and is authoritative. Once B
+        // has submitted, A is locked — letting A re-submit would overwrite the
+        // agreed B result and re-introduce a fake A/B diff. Reject it here.
+        // 权限账号例外：它有权在 QC 定案后回改前面，所以不受这个明检 A 锁定限制。
+        if (
+          !isPrivileged(operator) &&
+          currentFlow?.bMode === "open" &&
+          currentFlow?.bResultStatus === "Submitted"
+        ) {
+          throw new Error("明检以 B 为准：B 已提交，A 不能再修改。");
+        }
+        // First-round annotation. Preserve the pre-assigned mode (Back-to-Back
+        // stays Back-to-Back) — submitting A must never downgrade a B2B case.
+        // A B2B case only becomes "Ready for C Sampling" once B is also in; if B
+        // is still pending, A submitting just marks A done and waits for B.
+        const b2b = isBackToBack(currentFlow ?? ({} as ReviewFlow));
+        const bDone = currentFlow?.bResultStatus === "Submitted";
         Object.assign(sessionPatch, scorePatch, {
           status: "Completed Annotation",
         });
         flowPatch = {
-          annotationMode: currentFlow?.backToBackEnabled ? "Back-to-Back" : "Single Annotation",
-          currentState: "Ready for C Sampling",
+          annotationMode: b2b ? "Back-to-Back" : "Single Annotation",
+          currentState: b2b && !bDone ? "A Annotation" : "Ready for C Sampling",
           aAnnotator: operator,
           aResult: result,
           aResultStatus: "Submitted",
           bAnnotator: currentFlow?.bAnnotator,
           bResult: currentFlow?.bResult,
           bResultStatus: currentFlow?.bResultStatus,
+          bAssignee: currentFlow?.bAssignee,
+          backToBackEnabled: b2b ? true : currentFlow?.backToBackEnabled,
           sampledForQC: currentFlow?.sampledForQC ?? false,
           finalResultStatus: "Not Ready",
         };
@@ -530,15 +587,31 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         if (!currentFlow?.backToBackEnabled) {
           throw new Error("该 case 不是 Back-to-Back，不能以 B 身份提交。");
         }
-        Object.assign(sessionPatch, {
-          status: "Back-to-Back Completed",
-        });
+        // Auto-routing on B submit:
+        //  - Open review (明检): B graded on top of A and is authoritative, so
+        //    B's result overwrites A too — A/B become one agreed result, no diff.
+        //  - Blind & agreed: straight into the QC sampling pool.
+        //  - Blind & disagree: mark "Pending" reconcile; QA resolves before pooling.
+        const isOpen = currentFlow?.bMode === "open";
+        const aBot = currentFlow?.aResult?.bot;
+        const disagree = !isOpen && !!aBot && diffDims(aBot, result.bot).size > 0;
+        Object.assign(
+          sessionPatch,
+          // 明检以 B 为准：B 覆写 A 后 B 才是权威结果，主行分数也要跟着更新成 B 的。
+          isOpen ? scorePatch : {},
+          {
+            status: disagree ? "Back-to-Back Diff · Pending Reconcile" : "Back-to-Back Completed",
+          },
+        );
         flowPatch = {
           annotationMode: "Back-to-Back",
           currentState: "Ready for C Sampling",
           bAnnotator: operator,
           bResult: result,
           bResultStatus: "Submitted",
+          // 明检以 B 为准：同时把 A 覆盖成 B 的结果，A/B 统一、不留假 diff。
+          ...(isOpen ? { aResult: result } : {}),
+          reconcileStatus: disagree ? "Pending" : undefined,
           sampledForQC: currentFlow?.sampledForQC ?? false,
           finalResultStatus: "Not Ready",
         };
@@ -592,11 +665,58 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       });
     },
 
+    reconcileDiff: (sessionId, result, operator) => {
+      const flow = get().getReviewFlow(sessionId);
+      if (!flow) throw new Error("找不到该 case 的 review flow。");
+      if (flow.reconcileStatus !== "Pending") {
+        throw new Error("该 case 不处于待拉齐状态。");
+      }
+      // The reconciled result becomes the single agreed baseline: write it into
+      // BOTH A and B so downstream QC (which reads A/B as baseline) is consistent,
+      // and the A/B expanded rows show the same agreed scores.
+      const agreed: ReviewAnnotationResult = {
+        ruleVersion: result.ruleVersion,
+        bot: result.bot,
+        human: result.human,
+      };
+      const version = nextVersion(sessionId);
+      persist({
+        sessions: patchSession(sessionId, {
+          bot: result.bot,
+          human: result.human,
+          ruleVersion: result.ruleVersion,
+          status: "Back-to-Back Completed",
+          latestActivityLog: `${operator} reconciled A/B diff at ${now()}`,
+        }),
+        reviewFlows: patchFlow(sessionId, {
+          aResult: agreed,
+          bResult: agreed,
+          reconcileStatus: "Reconciled",
+          reconciledBy: operator,
+          currentState: "Ready for C Sampling",
+          finalResultStatus: "Not Ready",
+        }),
+        logs: [
+          ...get().logs,
+          log({
+            sessionId,
+            operator,
+            action: `Reconcile A/B to ${operator}`,
+            version,
+            detail: `Reconciled diff · User Satisfaction ${result.bot.userSatisfaction.toFixed(2)} · SQS ${result.bot.sqsTotal.toFixed(2)} (${result.bot.sqsPass ? "Pass" : "Fail"}) · UES ${result.bot.uesTotal.toFixed(2)}`,
+            snapshot: { ruleVersion: result.ruleVersion, bot: result.bot, human: result.human },
+          }),
+        ],
+      });
+    },
+
     startSampling: (taskId, config, operator) => {
       const eligible = get().reviewFlows.filter((flow) => {
         const session = get().sessions.find((s) => s.sessionId === flow.sessionId);
         if (!session || session.taskId !== taskId) return false;
         if (!isComplete(flow) || flow.currentState === "Final Result Ready") return false;
+        // A/B diff not yet reconciled → answer isn't finalized → not poolable.
+        if (flow.reconcileStatus === "Pending") return false;
         // Exclude cases already sampled in a prior batch so new batches draw
         // from the not-yet-sampled pool.
         if (flow.sampledForQC) return false;
@@ -634,6 +754,8 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             ...flow,
             currentState: "In C QC",
             sampledForQC: true,
+            // 指派 C 复核人：这批抽中的 case 交给 config.cReviewer 做 QC。
+            cReviewer: config.cReviewer || flow.cReviewer,
             sampleBatchLabel:
               config.method === "percentage"
                 ? `${config.value}% sample`
@@ -659,9 +781,10 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             operator,
             action: "Start Sampling",
             detail:
-              config.method === "percentage"
+              (config.method === "percentage"
                 ? `${config.value}% · selected ${targetCount} cases`
-                : `${config.value} cases · selected ${targetCount} cases`,
+                : `${config.value} cases · selected ${targetCount} cases`) +
+              (config.cReviewer ? ` · C: ${config.cReviewer}` : ""),
           }),
         ],
       });

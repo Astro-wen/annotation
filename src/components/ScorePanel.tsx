@@ -55,7 +55,11 @@ export function ScoreRow({
           <p className="text-sm font-medium text-ink">{label}</p>
           {hint && <p className="text-xs text-subtle">{hint}</p>}
         </div>
-        <ScoreButtons options={options} value={value} onChange={onChange} disabled={disabled} />
+        {/* When standard reasons exist, picking a reason already sets the score,
+            so the standalone 3/2/1/0 buttons are redundant and hidden. */}
+        {reasonOptions.length === 0 && (
+          <ScoreButtons options={options} value={value} onChange={onChange} disabled={disabled} />
+        )}
       </div>
 
       {reasonOptions.length > 0 ? (

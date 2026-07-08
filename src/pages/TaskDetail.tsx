@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, Fragment } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Edit3, User, FileClock, ChevronRight, ChevronDown, ListChecks, X, Download } from "lucide-react";
+import { Edit3, User, UserCheck, FileClock, ChevronRight, ChevronDown, ListChecks, X, Download } from "lucide-react";
 import Layout from "@/components/Layout";
 import { PageHeader, Button } from "@/components/ui";
 import Badge from "@/components/Badge";
@@ -9,9 +9,13 @@ import DownloadCsvMenu from "@/components/DownloadCsvMenu";
 import { downloadCsv } from "@/lib/csv";
 import { caseSets } from "@/mock/caseSets";
 import type { ActivityEntry, ActorScore, SessionRow } from "@/mock/types";
-import { useCurrentUserStore, USER_OPTIONS } from "@/lib/currentUser";
+import type { RubricDimension } from "@/mock/settings";
+import { useCurrentUserStore, USER_OPTIONS, isPrivileged, isVendor, isAdmin } from "@/lib/currentUser";
+import { caseVisibleTo } from "@/lib/access";
 import { useSessionStore } from "@/store/sessionStore";
 import { useRubricStore } from "@/store/rubricStore";
+import { caseAccuracy, diffDims } from "@/lib/diff";
+import { computeActorScore } from "@/lib/scoring";
 
 const extractLastUpdatedAt = (text?: string) => {
   if (!text) return "—";
@@ -24,6 +28,7 @@ export default function TaskDetail() {
   const navigate = useNavigate();
   const [assignSession, setAssignSession] = useState<SessionRow | null>(null);
   const [assignBSession, setAssignBSession] = useState<SessionRow | null>(null);
+  const [reconcileSession, setReconcileSession] = useState<SessionRow | null>(null);
   const [logSession, setLogSession] = useState<SessionRow | null>(null);
   const [snapshotEntry, setSnapshotEntry] = useState<ActivityEntry | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -35,6 +40,10 @@ export default function TaskDetail() {
   const [passFilter, setPassFilter] = useState("All");
   const [problemTypeFilter, setProblemTypeFilter] = useState("All");
   const [humanFilter, setHumanFilter] = useState("All");
+  // QC lifecycle filter: All / Waiting for QC (sampled, not finalized) / QC Completed.
+  const [qcFilter, setQcFilter] = useState("All");
+  // "只看我的任务": only rows where the current account is assigned to any slot (A/B/C).
+  const [mineOnly, setMineOnly] = useState(false);
   // Expanded back-to-back rows (each expands a dark "B version" row below it).
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -43,10 +52,18 @@ export default function TaskDetail() {
   const sessions = useSessionStore((s) => s.sessions);
   const imported = useSessionStore((s) => s.imported);
   const assignSingleQa = useSessionStore((s) => s.assignSingleQa);
+  const reconcileDiff = useSessionStore((s) => s.reconcileDiff);
   const getReviewFlow = useSessionStore((s) => s.getReviewFlow);
   const logs = useSessionStore((s) => s.logs);
   const currentEmail = useCurrentUserStore((s) => s.currentEmail);
+  // 权限账号：QC 定案后仍可回改 A / B / C。开启后，列表里那些定案后本该只读的入口
+  // 对它继续保持可编辑。
+  const privileged = isPrivileged(currentEmail);
+  // 供应商标注员：受硬隔离约束——只能看到分配给自己的 case、没有全量导出、没有
+  // “只看我的任务”开关（本来就只有自己的）。管理员 / QA 不受限。
+  const vendor = isVendor(currentEmail);
   const rubric = useRubricStore((s) => s.rubric);
+  const rubricWeights = useRubricStore((s) => s.weights);
 
   const activeDims = useMemo(() => rubric.filter((d) => d.enabled), [rubric]);
   const sqsDims = activeDims.filter((d) => d.group === "SQS");
@@ -55,19 +72,24 @@ export default function TaskDetail() {
   const shortName = (email?: string) =>
     email ? USER_OPTIONS.find((u) => u.email === email)?.shortName ?? email : undefined;
 
-  // Simplified per-slot status: Unassigned / Assigned / Completed / QCed.
-  // A row reads the A slot, the expanded B row reads the B slot.
+  // Simplified per-slot status: Unassigned / Assigned / Submitted (No QC) /
+  // Waiting for QC / QC Completed. A row reads the A slot, the expanded B row
+  // reads the B slot. "Waiting for QC" = sampled into QC but C hasn't finalized.
   const slotStatus = (
     flow: ReturnType<typeof getReviewFlow>,
     slot: "A" | "B",
-  ): { label: string; tone: "neutral" | "brand" | "success" } => {
+  ): { label: string; tone: "neutral" | "brand" | "success" | "warning" | "danger" } => {
     if (!flow) return { label: "Unassigned", tone: "neutral" };
     const assignee = slot === "A" ? flow.aAssignee ?? flow.aAnnotator : flow.bAssignee ?? flow.bAnnotator;
     const submitted = slot === "A" ? flow.aResultStatus === "Submitted" : flow.bResultStatus === "Submitted";
-    // "QCed" only applies to a slot that actually submitted and got finalized.
+    // "QC Completed" only applies to a slot that actually submitted and got finalized.
     // A B slot that never evaluated stays Assigned/Unassigned even post-finalize.
-    if (flow.currentState === "Final Result Ready" && submitted) return { label: "QCed", tone: "success" };
-    if (submitted) return { label: "Completed", tone: "success" };
+    if (flow.currentState === "Final Result Ready" && submitted) return { label: "QC Completed", tone: "success" };
+    // A/B double-blind disagreement waiting for QA to reconcile — surfaced on the A slot.
+    if (slot === "A" && flow.reconcileStatus === "Pending") return { label: "待拉齐（Diff）", tone: "danger" };
+    // Sampled into QC but not yet finalized — surfaced on the A slot only.
+    if (slot === "A" && flow.sampledForQC && submitted) return { label: "Waiting for QC", tone: "warning" };
+    if (submitted) return { label: "Submitted (No QC)", tone: "success" };
     if (assignee) return { label: "Assigned", tone: "brand" };
     return { label: "Unassigned", tone: "neutral" };
   };
@@ -75,6 +97,9 @@ export default function TaskDetail() {
   const rows = useMemo(() => {
     return sessions.filter((s) => {
       if (!imported && s.taskId !== task.taskId) return false;
+      // 供应商权限隔离（硬隔离）：在数据源头就过滤掉不属于当前供应商的 case，
+      // 供应商永远只能看到分配给自己的 case。管理员 / QA 不受此限。
+      if (vendor && !caseVisibleTo(currentEmail, s, getReviewFlow(s.sessionId))) return false;
       if (subtypeFilter !== "All" && s.serviceSubtype !== subtypeFilter) return false;
       if (sourceFilter !== "All" && s.knowledgeSource !== sourceFilter) return false;
       if (problemTypeFilter !== "All" && s.problemType !== problemTypeFilter) return false;
@@ -82,9 +107,29 @@ export default function TaskDetail() {
       if (passFilter === "No Pass" && s.bot?.sqsPass !== false) return false;
       if (humanFilter === "Has Human" && s.hasHumanTransfer !== true) return false;
       if (humanFilter === "Bot Only" && s.hasHumanTransfer === true) return false;
+      if (mineOnly) {
+        const flow = getReviewFlow(s.sessionId);
+        const mine =
+          s.qaOwner === currentEmail ||
+          flow?.aAssignee === currentEmail ||
+          flow?.aAnnotator === currentEmail ||
+          flow?.bAssignee === currentEmail ||
+          flow?.bAnnotator === currentEmail ||
+          flow?.cReviewer === currentEmail;
+        if (!mine) return false;
+      }
+      if (qcFilter !== "All") {
+        const flow = getReviewFlow(s.sessionId);
+        const finalized = flow?.currentState === "Final Result Ready";
+        const pendingReconcile = flow?.reconcileStatus === "Pending";
+        const waiting = !!flow?.sampledForQC && flow?.aResultStatus === "Submitted" && !finalized;
+        if (qcFilter === "待拉齐（Diff）" && !pendingReconcile) return false;
+        if (qcFilter === "Waiting for QC" && !waiting) return false;
+        if (qcFilter === "QC Completed" && !finalized) return false;
+      }
       return true;
     });
-  }, [sessions, imported, task.taskId, subtypeFilter, sourceFilter, passFilter, problemTypeFilter, humanFilter]);
+  }, [sessions, imported, task.taskId, subtypeFilter, sourceFilter, passFilter, problemTypeFilter, humanFilter, qcFilter, mineOnly, currentEmail, getReviewFlow, vendor]);
 
   // Prune selection / expansion state that no longer maps to a visible row
   // (e.g. after Clear All Data resets the store), so no ghost selected/expanded.
@@ -173,7 +218,7 @@ export default function TaskDetail() {
       <PageHeader
         title={task.taskName}
         subtitle={`Detail · Session List · ${task.taskId} · SQS (6) + UES · User Satisfaction (North Star)`}
-        actions={<DownloadCsvMenu taskId={task.taskId} />}
+        actions={vendor ? undefined : <DownloadCsvMenu taskId={task.taskId} />}
       />
 
       <div className="space-y-4 p-6">
@@ -185,6 +230,18 @@ export default function TaskDetail() {
           >
             <ListChecks className="h-4 w-4" /> Batch Edit Reasons ({selected.size})
           </button>
+          {!vendor && (
+            <button
+              onClick={() => setMineOnly((v) => !v)}
+              className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium ${
+                mineOnly
+                  ? "border-brand bg-brand-light text-brand"
+                  : "border-line text-ink hover:bg-page"
+              }`}
+            >
+              <UserCheck className="h-4 w-4" /> 只看我的任务
+            </button>
+          )}
           {btbIds.length > 0 && (
             <button
               onClick={toggleExpandAll}
@@ -200,6 +257,7 @@ export default function TaskDetail() {
           <Select label="Problem Type" value={problemTypeFilter} onChange={setProblemTypeFilter} options={["All", "R1 Information", "R2 Personalized Info", "R3 Operation"]} />
           <Select label="SQS" value={passFilter} onChange={setPassFilter} options={["All", "Pass", "No Pass"]} />
           <Select label="Human Result" value={humanFilter} onChange={setHumanFilter} options={["All", "Has Human", "Bot Only"]} />
+          <Select label="QC" value={qcFilter} onChange={setQcFilter} options={["All", "待拉齐（Diff）", "Waiting for QC", "QC Completed"]} />
           <span className="ml-auto text-xs text-subtle">{rows.length} sessions</span>
         </div>
 
@@ -265,16 +323,24 @@ export default function TaskDetail() {
                   const isBackToBack = flow?.backToBackEnabled === true;
                   const bReviewer = flow?.bAnnotator ?? flow?.bAssignee;
                   const bBot = flow?.bResult?.bot;
+                  // C (QC) slot — only exists once the case is sampled into QC.
+                  const sampled = flow?.sampledForQC === true;
+                  const cReviewer = flow?.cReviewer;
+                  const cBot = flow?.cResult?.bot;
+                  // Expandable when there's a B slot (back-to-back) or a C/QC slot.
+                  const canExpand = isBackToBack || sampled;
                   const isOpen = expanded.has(s.sessionId);
 
                   // No more "annotate vs review" distinction — A and B annotate
                   // at the same time. The row's own action is always the A slot
                   // (annotate / edit own / read-only view when finalized).
-                  const aActionRole: "A" | null = isFinal ? null : "A";
+                  // 权限账号例外：即使定案了，A 入口也保持可编辑。
+                  const aEditable = !isFinal || privileged;
+                  const aActionRole: "A" | null = aEditable ? "A" : null;
                   const aActionHref = aActionRole
                     ? `/annotate/${s.sessionId}?role=A`
                     : `/annotate/${s.sessionId}?view=1`;
-                  const aActionLabel = isFinal ? "View" : "Annotate";
+                  const aActionLabel = aEditable ? "Annotate" : "View";
 
                   const bot = s.bot;
                   const isSel = selected.has(s.sessionId);
@@ -283,11 +349,11 @@ export default function TaskDetail() {
                     <tr className={`border-b border-line hover:bg-page ${isSel ? "bg-brand-light/40" : ""} ${isOpen ? "border-b-0" : "last:border-0"}`}>
                       <td className="sticky left-0 z-10 bg-inherit px-3 py-3">
                         <div className="flex items-center gap-1.5">
-                          {isBackToBack ? (
+                          {canExpand ? (
                             <button
                               onClick={() => toggleExpand(s.sessionId)}
                               className="text-subtle hover:text-ink"
-                              title={isOpen ? "Collapse B" : "Expand B"}
+                              title={isOpen ? "Collapse" : "Expand"}
                             >
                               {isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                             </button>
@@ -297,7 +363,7 @@ export default function TaskDetail() {
                           <input
                             type="checkbox"
                             checked={isSel}
-                            disabled={!bot || isFinal}
+                            disabled={!bot || (isFinal && !privileged)}
                             onChange={() => toggleSelect(s.sessionId)}
                           />
                         </div>
@@ -367,7 +433,8 @@ export default function TaskDetail() {
                       <td className="px-3 py-3">
                         <button
                           onClick={() => setAssignSession(s)}
-                          className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-subtle hover:border-brand/40 hover:text-ink"
+                          disabled={vendor}
+                          className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-subtle hover:border-brand/40 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <User className="h-3.5 w-3.5" />
                           {s.qaOwner ?? "Assign"}
@@ -418,7 +485,10 @@ export default function TaskDetail() {
                         <td className="sticky left-0 z-10 bg-gray-100 px-3 py-3" />
                         <td className="px-3 py-3">
                           <span className="font-mono text-xs text-brand">{s.sessionId}</span>
-                          <div className="mt-0.5 text-[10px] font-medium text-brand">B · {shortName(bReviewer) ?? "—"}</div>
+                          <div className="mt-0.5 flex items-center gap-1.5">
+                            <span className="text-[10px] font-medium text-brand">B · {shortName(bReviewer) ?? "—"}</span>
+                            <Badge tone="neutral">盲检</Badge>
+                          </div>
                         </td>
                         <td className="px-3 py-3 text-subtle">{s.serviceSubtype}</td>
                         <td className="px-3 py-3">
@@ -467,7 +537,7 @@ export default function TaskDetail() {
                         <td className="px-3 py-3">
                           <button
                             onClick={() => setAssignBSession(s)}
-                            disabled={isFinal || flow?.bResultStatus === "Submitted"}
+                            disabled={vendor || (!privileged && (isFinal || flow?.bResultStatus === "Submitted"))}
                             className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-subtle hover:border-brand/40 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             <User className="h-3.5 w-3.5" />
@@ -487,13 +557,162 @@ export default function TaskDetail() {
                         </td>
                         <td className="px-3 py-3">
                           <div className="flex items-center gap-1">
-                            <Button
-                              variant="ghost"
-                              icon={Edit3}
-                              onClick={() => navigate(isFinal ? `/annotate/${s.sessionId}?view=1` : `/annotate/${s.sessionId}?role=B`)}
-                            >
-                              {isFinal ? "View" : "Annotate"}
-                            </Button>
+                            {flow?.reconcileStatus === "Pending" ? (
+                              <button
+                                onClick={() => setReconcileSession(s)}
+                                className="rounded-md bg-danger px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+                                title="A/B 结果不一致，拉齐后进入 QC 池"
+                              >
+                                拉齐 Diff
+                              </button>
+                            ) : (
+                              <Button
+                                variant="ghost"
+                                icon={Edit3}
+                                onClick={() => navigate(isFinal && !privileged ? `/annotate/${s.sessionId}?view=1` : `/annotate/${s.sessionId}?role=B`)}
+                              >
+                                {isFinal && !privileged ? "View" : "Annotate"}
+                              </Button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+
+                    {/* Expanded "C version" row — same session, C's QC slot.
+                        Shown for sampled cases. Do QC opens the annotation page
+                        as role=C (blank-slate review with A/B reference); View QC
+                        opens it read-only. */}
+                    {sampled && isOpen && (
+                      <tr className="border-b border-line bg-brand-light/30 last:border-0">
+                        <td className="sticky left-0 z-10 bg-brand-light/30 px-3 py-3" />
+                        <td className="px-3 py-3">
+                          <span className="font-mono text-xs text-brand">{s.sessionId}</span>
+                          <div className="mt-0.5 text-[10px] font-medium text-brand">C · QC · {shortName(cReviewer) ?? "—"}</div>
+                        </td>
+                        <td className="px-3 py-3 text-subtle">{s.serviceSubtype}</td>
+                        <td className="px-3 py-3">
+                          <Badge tone={s.knowledgeSource === "SOP" ? "neutral" : "brand"}>{s.knowledgeSource}</Badge>
+                        </td>
+                        {sqsExpanded &&
+                          sqsDims.map((d) => (
+                            <td key={d.key} className="px-3 py-3">
+                              <DimCell value={cBot?.scores?.[d.key]} reason={cBot?.reasons?.[d.key]} />
+                            </td>
+                          ))}
+                        <td className="px-3 py-3">
+                          {!cBot ? "—" : (
+                            <span className="flex items-center gap-1.5">
+                              <span className="font-mono">{cBot.sqsTotal.toFixed(2)}</span>
+                              <Badge tone={cBot.sqsPass ? "success" : "danger"}>{cBot.sqsPass ? "Pass" : "No Pass"}</Badge>
+                            </span>
+                          )}
+                        </td>
+                        {uesExpanded &&
+                          uesDims.map((d) => (
+                            <td key={d.key} className="px-3 py-3">
+                              <DimCell value={cBot?.scores?.[d.key]} reason={cBot?.reasons?.[d.key]} />
+                            </td>
+                          ))}
+                        <td className="px-3 py-3">
+                          {!cBot ? "—" : (
+                            <span className="flex items-center gap-1.5">
+                              <span className="font-mono">{cBot.uesTotal.toFixed(2)}</span>
+                              <Badge tone={cBot.uesPass ? "success" : "danger"}>{cBot.uesPass ? "Pass" : "Fail"}</Badge>
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {!cBot ? "—" : (
+                            <span className="inline-flex items-center rounded-md bg-brand-light px-2 py-1 font-mono text-sm font-semibold text-brand">
+                              {cBot.userSatisfaction.toFixed(2)}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          <Badge tone={s.hasHumanTransfer ? "success" : "neutral"}>
+                            {s.hasHumanTransfer ? "Yes" : "No"}
+                          </Badge>
+                        </td>
+                        <td className="px-3 py-3 text-[11px] text-muted">QC reviewer</td>
+                        <td className="px-3 py-3">
+                          {(() => {
+                            const st = slotStatus(flow, "A");
+                            // On the C row show the QC-facing state only.
+                            const label = st.label === "QC Completed" ? "QC Completed" : "Waiting for QC";
+                            const tone = st.label === "QC Completed" ? "success" : "warning";
+                            return <Badge tone={tone}>{label}</Badge>;
+                          })()}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center justify-end gap-3">
+                            {(() => {
+                              // Prominent QC accuracy — only once C has done QC.
+                              const acc = caseAccuracy(flow);
+                              if (acc === null) return null;
+                              const tone =
+                                acc >= 80 ? "text-success" : acc >= 50 ? "text-warning" : "text-danger";
+                              return (
+                                <div className="text-right leading-none">
+                                  <div className="text-[9px] uppercase tracking-wide text-subtle">QC Acc</div>
+                                  <div className={`font-mono text-lg font-bold ${tone}`}>{acc.toFixed(1)}%</div>
+                                </div>
+                              );
+                            })()}
+                            {(() => {
+                              // Anti-self-review at the entry: a user who graded
+                              // this case as A or B cannot QC it themselves.
+                              // 权限账号例外：它可以在定案后回改，不受防自审限制。
+                              const selfReview =
+                                !privileged &&
+                                !isFinal &&
+                                (flow?.aAnnotator === currentEmail || flow?.bAnnotator === currentEmail);
+                              if (selfReview) {
+                                return (
+                                  <span
+                                    className="text-xs text-muted"
+                                    title="你标注过这条 case（A / B），不能再由你来做 QC，请换人复核"
+                                  >
+                                    不能评自己标注的
+                                  </span>
+                                );
+                              }
+                              // 指派校验：抽样时已把这批 case 指派给某个 C 复核人。
+                              // 能做 QC 的人 = 所有管理员 / QA（含权限账号）+ 被指派的 C 本人。
+                              // 其他人只能查看，避免谁点谁做。
+                              const assignedC = flow?.cReviewer;
+                              const canDoQc =
+                                privileged ||
+                                isAdmin(currentEmail) ||
+                                assignedC === currentEmail;
+                              if (!canDoQc) {
+                                return (
+                                  <span
+                                    className="text-xs text-muted"
+                                    title={`该 case 的 QC 已指派给 ${shortName(assignedC) ?? assignedC}`}
+                                  >
+                                    View QC · 指派给 {shortName(assignedC) ?? assignedC}
+                                  </span>
+                                );
+                              }
+                              // 权限账号即使定案（isFinal）也能重新做 QC 覆盖结果，普通账号只能查看。
+                              const cEditable = !isFinal || privileged;
+                              return (
+                                <Button
+                                  variant="ghost"
+                                  icon={Edit3}
+                                  onClick={() =>
+                                    navigate(
+                                      cEditable
+                                        ? `/annotate/${s.sessionId}?role=C`
+                                        : `/annotate/${s.sessionId}?role=C&view=1`,
+                                    )
+                                  }
+                                >
+                                  {cEditable ? "Do QC" : "View QC"}
+                                </Button>
+                              );
+                            })()}
                           </div>
                         </td>
                       </tr>
@@ -548,6 +767,32 @@ export default function TaskDetail() {
         );
       })()}
 
+      {reconcileSession && (() => {
+        const flow = getReviewFlow(reconcileSession.sessionId);
+        if (!flow?.aResult?.bot || !flow?.bResult?.bot) return null;
+        return (
+          <ReconcileModal
+            session={reconcileSession}
+            aScore={flow.aResult.bot}
+            bScore={flow.bResult.bot}
+            aName={shortName(flow.aAnnotator ?? flow.aAssignee) ?? "A"}
+            bName={shortName(flow.bAnnotator ?? flow.bAssignee) ?? "B"}
+            dimName={dimName}
+            dims={activeDims}
+            onClose={() => setReconcileSession(null)}
+            onConfirm={(scores, reasons) => {
+              try {
+                const bot = computeActorScore(scores, rubric, rubricWeights, reasons);
+                reconcileDiff(reconcileSession.sessionId, { ruleVersion: flow.aResult!.ruleVersion, bot }, currentEmail);
+                setReconcileSession(null);
+              } catch (e) {
+                alert(e instanceof Error ? e.message : "拉齐失败");
+              }
+            }}
+          />
+        );
+      })()}
+
       {batchOpen && (
         <BatchEditReasonsModal
           count={selected.size}
@@ -577,14 +822,14 @@ export default function TaskDetail() {
             </div>
             <p className="mb-4 font-mono text-xs text-subtle">{logSession.sessionId}</p>
 
-            <div className="overflow-hidden rounded-lg border border-line">
-              <table className="w-full text-sm">
+            <div className="overflow-x-auto rounded-lg border border-line">
+              <table className="w-full min-w-[36rem] text-sm">
                 <thead>
                   <tr className="border-b border-line bg-page text-left text-xs uppercase tracking-wide text-subtle">
-                    <th className="px-3 py-2 font-medium">Operation time</th>
-                    <th className="px-3 py-2 font-medium">Operator</th>
-                    <th className="px-3 py-2 font-medium">Operation</th>
-                    <th className="px-3 py-2 font-medium">Version</th>
+                    <th className="whitespace-nowrap px-3 py-2 font-medium">Operation time</th>
+                    <th className="whitespace-nowrap px-3 py-2 font-medium">Operator</th>
+                    <th className="whitespace-nowrap px-3 py-2 font-medium">Operation</th>
+                    <th className="whitespace-nowrap px-3 py-2 font-medium">Version</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -597,10 +842,10 @@ export default function TaskDetail() {
                   )}
                   {versionEntries.map((l, i) => (
                     <tr key={i} className="border-b border-line last:border-0">
-                      <td className="px-3 py-2 font-mono text-xs text-muted">{l.at}</td>
-                      <td className="px-3 py-2 text-xs text-subtle">{l.operator}</td>
-                      <td className="px-3 py-2 text-xs text-ink">{l.action}</td>
-                      <td className="px-3 py-2">
+                      <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-muted">{l.at}</td>
+                      <td className="whitespace-nowrap px-3 py-2 text-xs text-subtle">{l.operator}</td>
+                      <td className="whitespace-nowrap px-3 py-2 text-xs text-ink">{l.action}</td>
+                      <td className="whitespace-nowrap px-3 py-2">
                         {l.version && l.snapshot ? (
                           <button
                             onClick={() => setSnapshotEntry(l)}
@@ -658,6 +903,203 @@ export default function TaskDetail() {
   );
 }
 
+/**
+ * Quick A/B reconciliation (in-Detail, no page nav). Diff dimensions are
+ * highlighted; QA picks A's or B's value per diff dim (or types another).
+ * Non-diff dimensions auto-carry (A == B there). Confirm finalizes the case
+ * into the QC sampling pool.
+ */
+function ReconcileModal({
+  session,
+  aScore,
+  bScore,
+  aName,
+  bName,
+  dimName,
+  dims,
+  onClose,
+  onConfirm,
+}: {
+  session: SessionRow;
+  aScore: ActorScore;
+  bScore: ActorScore;
+  aName: string;
+  bName: string;
+  dimName: (k: string) => string;
+  dims: RubricDimension[];
+  onClose: () => void;
+  onConfirm: (scores: Record<string, number>, reasons?: Record<string, string>) => void;
+}) {
+  const diffKeys = diffDims(aScore, bScore);
+  // Per diff dim: pick A's value, B's value, or "other" (a re-chosen score).
+  type Pick = { who: "A" | "B" } | { who: "other"; score: number };
+  const [picked, setPicked] = useState<Record<string, Pick>>({});
+  // "other" is only resolved once a score has actually been chosen.
+  const allResolved = [...diffKeys].every((k) => {
+    const p = picked[k];
+    if (!p) return false;
+    if (p.who === "other") return !Number.isNaN(p.score);
+    return true;
+  });
+
+  const reasonFor = (key: string, score: number): string | undefined =>
+    dims.find((d) => d.key === key)?.reasons.find((r) => r.score === score)?.text;
+
+  const build = () => {
+    const scores: Record<string, number> = { ...aScore.scores };
+    const reasons: Record<string, string> = { ...(aScore.reasons ?? {}) };
+    for (const k of diffKeys) {
+      const pick = picked[k];
+      if (!pick) continue;
+      if (pick.who === "other") {
+        if (Number.isNaN(pick.score)) continue;
+        scores[k] = pick.score;
+        const r = reasonFor(k, pick.score);
+        if (r !== undefined) reasons[k] = r;
+      } else {
+        const from = pick.who === "B" ? bScore : aScore;
+        scores[k] = from.scores[k];
+        if (from.reasons?.[k] !== undefined) reasons[k] = from.reasons[k];
+      }
+    }
+    return { scores, reasons };
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
+      <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl border border-line bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-line px-5 py-4">
+          <div>
+            <h3 className="text-base font-semibold">拉齐 A / B Diff</h3>
+            <p className="font-mono text-xs text-subtle">{session.sessionId}</p>
+          </div>
+          <button onClick={onClose} className="text-subtle hover:text-ink">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
+          <p className="rounded-md bg-page px-3 py-2 text-xs text-subtle">
+            共 <span className="font-semibold text-danger">{diffKeys.size}</span> 个维度分歧。逐个选定最终结果；一致的维度自动沿用。确认后进入 QC 抽样池。
+          </p>
+          {dims.map((d) => {
+            const isDiff = diffKeys.has(d.key);
+            const aVal = aScore.scores[d.key];
+            const bVal = bScore.scores[d.key];
+            if (!isDiff) {
+              return (
+                <div key={d.key} className="flex items-center justify-between rounded-lg border border-line px-3 py-2">
+                  <span className="text-sm text-subtle">{dimName(d.key)}</span>
+                  <span className="flex items-center gap-2">
+                    <Badge tone="neutral">一致</Badge>
+                    <span className="font-mono text-sm font-semibold text-ink">{aVal}</span>
+                  </span>
+                </div>
+              );
+            }
+            const sel = picked[d.key];
+            const otherActive = sel?.who === "other";
+            return (
+              <div key={d.key} className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2">
+                <div className="mb-2 flex items-center gap-2">
+                  <Badge tone="danger">Diff</Badge>
+                  <span className="text-sm font-medium text-ink">{dimName(d.key)}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { who: "A" as const, name: aName, val: aVal, reason: aScore.reasons?.[d.key] },
+                    { who: "B" as const, name: bName, val: bVal, reason: bScore.reasons?.[d.key] },
+                  ]).map((opt) => {
+                    const on = sel?.who === opt.who;
+                    return (
+                      <button
+                        key={opt.who}
+                        type="button"
+                        onClick={() => setPicked((p) => ({ ...p, [d.key]: { who: opt.who } }))}
+                        className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                          on ? "border-brand bg-brand-light" : "border-line hover:border-brand/40"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className={`text-xs font-medium ${on ? "text-brand" : "text-subtle"}`}>{opt.who} · {opt.name}</span>
+                          <span className="font-mono text-sm font-semibold text-ink">{opt.val}</span>
+                        </div>
+                        {opt.reason && <div className="mt-0.5 truncate text-[11px] text-muted" title={opt.reason}>{opt.reason}</div>}
+                      </button>
+                    );
+                  })}
+                  {/* Third option: neither A nor B is right — re-pick a score. */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPicked((p) => {
+                        const cur = p[d.key];
+                        // Toggle into "other" mode; keep score if already chosen.
+                        if (cur?.who === "other") return p;
+                        return { ...p, [d.key]: { who: "other", score: NaN } as Pick };
+                      })
+                    }
+                    className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                      otherActive ? "border-brand bg-brand-light" : "border-line hover:border-brand/40"
+                    }`}
+                  >
+                    <span className={`block text-xs font-medium ${otherActive ? "text-brand" : "text-subtle"}`}>其他</span>
+                    <span className="mt-0.5 block text-[11px] text-muted">我们都不对，重新选一个</span>
+                  </button>
+                </div>
+
+                {/* When "other" is chosen, expand this dim's score options to re-pick. */}
+                {otherActive && (
+                  <div className="mt-2 rounded-lg border border-brand/30 bg-white p-2">
+                    <p className="mb-1.5 text-[11px] text-subtle">重新选一个分数：</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {d.options.map((sc) => {
+                        const chosen = sel?.who === "other" && (sel as { score: number }).score === sc;
+                        return (
+                          <button
+                            key={sc}
+                            type="button"
+                            title={reasonFor(d.key, sc)}
+                            onClick={() => setPicked((p) => ({ ...p, [d.key]: { who: "other", score: sc } }))}
+                            className={`h-8 w-8 rounded-md border font-mono text-sm font-semibold transition-colors ${
+                              chosen ? "border-brand bg-brand text-white" : "border-line text-ink hover:border-brand/50"
+                            }`}
+                          >
+                            {sc}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {sel?.who === "other" && !Number.isNaN((sel as { score: number }).score) && reasonFor(d.key, (sel as { score: number }).score) && (
+                      <p className="mt-1.5 text-[11px] text-muted">{reasonFor(d.key, (sel as { score: number }).score)}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-4">
+          <button onClick={onClose} className="rounded-md px-4 py-2 text-sm font-medium text-brand hover:bg-page">
+            Cancel
+          </button>
+          <button
+            onClick={() => {
+              const { scores, reasons } = build();
+              onConfirm(scores, reasons);
+            }}
+            disabled={!allResolved}
+            className="rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            确认拉齐并进入 QC 池
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DimCell({ value, reason }: { value?: number; reason?: string }) {
   if (value === undefined) return <span className="text-muted">—</span>;
   const tone = value >= 3 ? "text-success" : value >= 2 ? "text-ink" : value >= 1 ? "text-warning" : "text-danger";
@@ -668,7 +1110,6 @@ function DimCell({ value, reason }: { value?: number; reason?: string }) {
     </div>
   );
 }
-
 function BatchEditReasonsModal({
   count,
   dims,

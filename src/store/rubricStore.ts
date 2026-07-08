@@ -59,7 +59,7 @@ function loadInitial(): PersistShape {
       {
         version: 1,
         at: now(),
-        operator: "aaron.wen@bytedance.com",
+        operator: "admin@bytedance.com",
         note: "Initial standard rubric (6-dim SQS + 1-dim UES)",
         rubric: clone(rubric),
         weights: { ...weights },

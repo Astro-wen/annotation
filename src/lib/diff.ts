@@ -10,23 +10,28 @@ export function diffDims(a?: ActorScore, b?: ActorScore): Set<string> {
   return out;
 }
 
-/** True when double-blind A and B disagree on any dimension score. */
-export function hasABDiff(flow: ReviewFlow): boolean {
-  if (!flow.backToBackEnabled) return false;
-  if (!flow.aResult?.bot || !flow.bResult?.bot) return false;
-  return diffDims(flow.aResult.bot, flow.bResult.bot).size > 0;
-}
-
-/** The baseline C is compared against: B in double-blind (once B submitted), else A. */
+/**
+ * The baseline C is compared against. By the time a case reaches QC, A and B
+ * are always one agreed result (blind diffs are reconciled and open review
+ * overwrites A), so A === B — reading B when present, else A, is equivalent.
+ * Normal (single-review) uses A.
+ */
 export function cBaseline(flow: ReviewFlow): ActorScore | undefined {
   const isDouble = flow.bResultStatus === "Submitted";
   return isDouble ? flow.bResult?.bot ?? flow.aResult?.bot : flow.aResult?.bot;
 }
 
-/** True when C's final result differs from its baseline (A, or A/B) on any dim. */
-export function hasCDiff(flow: ReviewFlow): boolean {
-  if (!flow.cResult?.bot) return false;
-  const base = cBaseline(flow);
-  if (!base) return false;
-  return diffDims(base, flow.cResult.bot).size > 0;
+/**
+ * Per-case QC accuracy: share of dimensions where C agrees with the audited
+ * baseline (A, or B in double-blind). Each shared dimension is equal-weighted
+ * (match = 100%, mismatch = 0%). Returns null when it can't be computed.
+ */
+export function caseAccuracy(flow: ReviewFlow): number | null {
+  const c = flow.cResult?.bot?.scores;
+  const base = cBaseline(flow)?.scores;
+  if (!c || !base) return null;
+  const keys = Object.keys(c).filter((k) => base[k] !== undefined);
+  if (keys.length === 0) return null;
+  const matched = keys.filter((k) => c[k] === base[k]).length;
+  return (matched / keys.length) * 100;
 }

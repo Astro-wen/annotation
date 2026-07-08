@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { getUserOption, USER_OPTIONS, useCurrentUserStore } from "@/lib/currentUser";
 
+const roleLabel = (role: "admin" | "vendor") => (role === "admin" ? "管理员 / QA" : "供应商");
+
 export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const currentEmail = useCurrentUserStore((s) => s.currentEmail);
@@ -57,7 +59,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             >
               {USER_OPTIONS.map((user) => (
                 <option key={user.email} value={user.email}>
-                  {user.label} · {user.email}
+                  [{roleLabel(user.role)}] {user.label} · {user.email}
                 </option>
               ))}
             </select>
@@ -65,7 +67,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-2">
             <ClipboardCheck className="h-4 w-4 text-brand" />
             <span className="font-medium text-ink">
-              {currentUser.shortName} · {currentUser.email}
+              {currentUser.shortName} · {roleLabel(currentUser.role)}
             </span>
           </div>
         </div>
@@ -110,7 +112,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <div className="rounded-xl bg-white/5 px-3 py-3">
                 <p className="text-xs font-medium text-white">{currentUser.label}</p>
                 <p className="mt-1 truncate text-[11px] text-white/60">{currentUser.email}</p>
-                <p className="mt-1 text-[11px] text-[#8BE4EA]">Test account switch enabled</p>
+                <p className="mt-1 text-[11px] text-[#8BE4EA]">当前角色：{roleLabel(currentUser.role)}</p>
               </div>
             </div>
           </div>

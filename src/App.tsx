@@ -4,9 +4,6 @@ import ImportSample from "@/pages/ImportSample";
 import Settings from "@/pages/Settings";
 import TaskDetail from "@/pages/TaskDetail";
 import Annotation from "@/pages/Annotation";
-import Audit from "@/pages/Audit";
-import ResultCompare from "@/pages/ResultCompare";
-import CReview from "@/pages/CReview";
 
 export default function App() {
   // Match Vite's base so routing works under the GitHub Pages sub-path
@@ -21,9 +18,6 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/task/:taskId" element={<TaskDetail />} />
         <Route path="/annotate/:sessionId" element={<Annotation />} />
-        <Route path="/audit" element={<Audit />} />
-        <Route path="/audit/compare/:sessionId" element={<ResultCompare />} />
-        <Route path="/audit/review/:sessionId" element={<CReview />} />
         <Route path="*" element={<Navigate to="/home" replace />} />
       </Routes>
     </Router>

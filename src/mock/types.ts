@@ -80,7 +80,6 @@ export interface ConversationMessage {
 
 export type ReviewState =
   | "A Annotation"
-  | "Back-to-Back"
   | "Ready for C Sampling"
   | "In C QC"
   | "Final Result Ready";
@@ -103,12 +102,21 @@ export interface ReviewFlow {
   bAnnotator?: string;
   cReviewer?: string;
   backToBackEnabled?: boolean;
+  /** Second-round (B) review style. "blind" = independent double-blind (default);
+   * "open" = B sees A's result and adjusts directly (标检模式 明检). */
+  bMode?: "blind" | "open";
   aResult?: ReviewAnnotationResult;
   bResult?: ReviewAnnotationResult;
   cResult?: ReviewAnnotationResult;
   aResultStatus?: string;
   bResultStatus?: string;
   cResultStatus?: string;
+  /** Double-blind reconciliation status when A/B disagree:
+   * "Pending" = waiting for QA to reconcile; "Reconciled" = resolved & pooled.
+   * Undefined = no reconciliation needed (agreed, or not back-to-back). */
+  reconcileStatus?: "Pending" | "Reconciled";
+  /** Who reconciled the A/B diff (audit trail). */
+  reconciledBy?: string;
   sampledForQC?: boolean;
   sampleBatchLabel?: string;
   finalResultStatus?: string;

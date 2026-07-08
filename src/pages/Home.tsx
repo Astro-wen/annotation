@@ -7,12 +7,15 @@ import Badge from "@/components/Badge";
 import AssignModal from "@/components/AssignModal";
 import ImportByteHiModal from "@/components/ImportByteHiModal";
 import NewAnnotationTaskModal from "@/components/NewAnnotationTaskModal";
+import SamplingModal, { type QcFlowRow } from "@/components/SamplingModal";
 import DownloadCsvMenu from "@/components/DownloadCsvMenu";
 import { downloadCsv } from "@/lib/csv";
 import { caseSets } from "@/mock/caseSets";
 import type { CaseSet, SessionRow } from "@/mock/types";
 import { useSessionStore } from "@/store/sessionStore";
-import { useCurrentUserStore } from "@/lib/currentUser";
+import { useCurrentUserStore, isVendor } from "@/lib/currentUser";
+import { caseVisibleTo } from "@/lib/access";
+import { caseAccuracy } from "@/lib/diff";
 
 export default function Home() {
   const navigate = useNavigate();
@@ -26,12 +29,29 @@ export default function Home() {
   const distributeTaskCases = useSessionStore((s) => s.distributeTaskCases);
   const reset = useSessionStore((s) => s.reset);
   const currentEmail = useCurrentUserStore((s) => s.currentEmail);
+  // 供应商标注员：首页只能看到自己有份的 case set，且看不到 Import / Export /
+  // Sampling / Batch Assign / Clear All 等管理员操作入口。管理员 / QA 不受限。
+  const vendor = isVendor(currentEmail);
   const [resetOpen, setResetOpen] = useState(false);
+  // Sampling draws completed cases into QC; the actual QC review then happens
+  // on each task's Detail page (the case's C/QC row), not here.
+  const [samplingTaskId, setSamplingTaskId] = useState<string | null>(null);
 
   const filteredTasks = caseSets.filter(
     (t) =>
       (sourceFilter === "All" || t.source === sourceFilter) &&
-      (typeFilter === "All" || t.taskType === typeFilter)
+      (typeFilter === "All" || t.taskType === typeFilter) &&
+      // 供应商硬隔离：只保留至少含一条分配给自己的 case 的 case set。
+      (!vendor ||
+        sessions.some(
+          (s) =>
+            s.taskId === t.taskId &&
+            caseVisibleTo(
+              currentEmail,
+              s,
+              reviewFlows.find((rf) => rf.sessionId === s.sessionId),
+            ),
+        ))
   );
 
   // Live per-task progress from the store. "Assigned" = has an owner/annotator
@@ -90,8 +110,9 @@ export default function Home() {
     const sqsPassRate =
       n === 0 ? "—" : `${((scored.filter((s) => s.bot!.sqsPass).length / n) * 100).toFixed(1)}%`;
 
-    // QC Accuracy: among C-finalized cases in this task, the share where C's
-    // final scores exactly match A's original scores (C did not change A).
+    // QC Accuracy: dimension-level average across C-finalized cases in this
+    // task. Each case scores "matched dims / compared dims" (see caseAccuracy),
+    // then those are equal-weighted — identical to the QC drawer's number.
     const finalized = reviewFlows.filter(
       (f) =>
         f.currentState === "Final Result Ready" &&
@@ -99,19 +120,13 @@ export default function Home() {
         f.cResult &&
         sessions.some((s) => s.sessionId === f.sessionId && s.taskId === taskId),
     );
+    const perCase = finalized
+      .map((f) => caseAccuracy(f))
+      .filter((v): v is number => v !== null);
     const qcAccuracy =
-      finalized.length === 0
+      perCase.length === 0
         ? "—"
-        : `${(
-            (finalized.filter((f) => {
-              const a = f.aResult!.bot.scores;
-              const c = f.cResult!.bot.scores;
-              const keys = new Set([...Object.keys(a), ...Object.keys(c)]);
-              return Array.from(keys).every((k) => a[k] === c[k]);
-            }).length /
-              finalized.length) *
-            100
-          ).toFixed(1)}%`;
+        : `${(perCase.reduce((a, b) => a + b, 0) / perCase.length).toFixed(1)}%`;
 
     return {
       total,
@@ -143,6 +158,25 @@ export default function Home() {
     return flows.some((f) => f.backToBackEnabled) ? "B2B" : "Normal";
   };
 
+  // Cases still available for a NEW sampling batch: annotation complete
+  // (A submitted, plus B if back-to-back), not yet sampled, not finalized.
+  const qcPool = (taskId: string): QcFlowRow[] => {
+    const taskSessions = sessions.filter((s) => s.taskId === taskId);
+    return reviewFlows
+      .map((flow) => ({
+        flow,
+        session: taskSessions.find((s) => s.sessionId === flow.sessionId),
+      }))
+      .filter(
+        ({ flow, session }) =>
+          !!session &&
+          flow.aResultStatus === "Submitted" &&
+          (!flow.backToBackEnabled || flow.bResultStatus === "Submitted") &&
+          !flow.sampledForQC &&
+          flow.currentState !== "Final Result Ready",
+      );
+  };
+
   const exportTaskToByteHi = (task: CaseSet) => {
     const rows = sessions
       .filter((s) => s.taskId === task.taskId)
@@ -167,21 +201,29 @@ export default function Home() {
       <div className="flex items-center justify-between border-b border-line bg-white px-6 py-4">
         <h1 className="text-xl font-bold tracking-tight text-ink">Manual Annotation Tool</h1>
         <div className="flex items-center gap-2">
-          <Button icon={Database} onClick={() => setImportModal("bytehi")}>
-            Import from ByteHi
-          </Button>
-          <Button variant="primary" icon={UploadCloud} onClick={() => setImportModal("csv")}>
-            Upload CSV
-          </Button>
-          <Button icon={SettingsIcon} onClick={() => navigate("/settings")}>
-            Settings
-          </Button>
-          <button
-            onClick={() => setResetOpen(true)}
-            className="flex items-center gap-1.5 rounded-md border border-danger/40 px-3 py-1.5 text-sm font-medium text-danger hover:bg-danger/10"
-          >
-            <Trash2 className="h-4 w-4" /> Clear All Data
-          </button>
+          {vendor ? (
+            <Button icon={SettingsIcon} onClick={() => navigate("/settings")}>
+              Settings
+            </Button>
+          ) : (
+            <>
+              <Button icon={Database} onClick={() => setImportModal("bytehi")}>
+                Import from ByteHi
+              </Button>
+              <Button variant="primary" icon={UploadCloud} onClick={() => setImportModal("csv")}>
+                Upload CSV
+              </Button>
+              <Button icon={SettingsIcon} onClick={() => navigate("/settings")}>
+                Settings
+              </Button>
+              <button
+                onClick={() => setResetOpen(true)}
+                className="flex items-center gap-1.5 rounded-md border border-danger/40 px-3 py-1.5 text-sm font-medium text-danger hover:bg-danger/10"
+              >
+                <Trash2 className="h-4 w-4" /> Clear All Data
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -189,7 +231,7 @@ export default function Home() {
         {/* Rule toggle + filters */}
         <div className="flex flex-wrap items-center gap-3">
           <div className="inline-flex rounded-lg border border-line bg-white p-1">
-            {(["old", "new"] as const).map((r) => (
+            {(["new", "old"] as const).map((r) => (
               <button
                 key={r}
                 onClick={() => setRule(r)}
@@ -322,9 +364,15 @@ export default function Home() {
                               </span>
                             )}
                           </td>
-                          <td className="px-4 py-3 font-mono text-ink">
-                            {stats.qcDone}
-                            <span className="text-muted"> / {stats.qcTotal}</span>
+                          <td className="px-4 py-3">
+                            {stats.qcTotal > 0 ? (
+                              <span className="font-mono text-ink" title="QC finalized / sampled">
+                                {stats.qcDone}
+                                <span className="text-muted"> / {stats.qcTotal}</span>
+                              </span>
+                            ) : (
+                              <span className="font-mono text-muted">—</span>
+                            )}
                           </td>
                           <td className="px-4 py-3 font-mono text-ink">{stats.sqsPassRate}</td>
                           <td className="px-4 py-3 font-mono text-ink">{stats.sqsAvg}</td>
@@ -344,27 +392,31 @@ export default function Home() {
                               >
                                 Detail
                               </Button>
-                              <Button
-                                variant="ghost"
-                                icon={Users}
-                                onClick={() => setAssignTask(t)}
-                              >
-                                Batch Assign
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                icon={ShieldCheck}
-                                onClick={() => navigate("/audit")}
-                              >
-                                Audit
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                onClick={() => exportTaskToByteHi(t)}
-                              >
-                                Export to ByteHi
-                              </Button>
-                              <DownloadCsvMenu taskId={t.taskId} label="Download" />
+                              {!vendor && (
+                                <>
+                                  <Button
+                                    variant="ghost"
+                                    icon={Users}
+                                    onClick={() => setAssignTask(t)}
+                                  >
+                                    Batch Assign
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    icon={ShieldCheck}
+                                    onClick={() => setSamplingTaskId(t.taskId)}
+                                  >
+                                    Sampling
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    onClick={() => exportTaskToByteHi(t)}
+                                  >
+                                    Export to ByteHi
+                                  </Button>
+                                  <DownloadCsvMenu taskId={t.taskId} label="Download" />
+                                </>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -403,6 +455,33 @@ export default function Home() {
           }}
         />
       )}
+
+      {samplingTaskId && (() => {
+        const meta = caseSets.find((t) => t.taskId === samplingTaskId);
+        const pool = qcPool(samplingTaskId);
+        // Completed cases: A submitted (plus B if back-to-back) — the denominator.
+        const completed = reviewFlows.filter(
+          (f) =>
+            sessions.some((s) => s.sessionId === f.sessionId && s.taskId === samplingTaskId) &&
+            f.aResultStatus === "Submitted" &&
+            (!f.backToBackEnabled || f.bResultStatus === "Submitted"),
+        ).length;
+        return (
+          <SamplingModal
+            taskId={samplingTaskId}
+            taskName={meta?.taskName ?? samplingTaskId}
+            totalCompleted={completed}
+            pool={pool}
+            currentEmail={currentEmail}
+            onClose={() => setSamplingTaskId(null)}
+            onConfirmed={(taskId) => {
+              setSamplingTaskId(null);
+              // QC now happens on the task's Detail page.
+              navigate(`/task/${taskId}`);
+            }}
+          />
+        );
+      })()}
 
       {importModal === "bytehi" && (
         <ImportByteHiModal
