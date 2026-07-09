@@ -72,6 +72,18 @@ export default function TaskDetail() {
   const shortName = (email?: string) =>
     email ? USER_OPTIONS.find((u) => u.email === email)?.shortName ?? email : undefined;
 
+  // 盲检隔离：判断当前 vendor 在这条 case 里占哪个槽位（A / B / C）。
+  // 供应商只能看到自己那一格的结果，看不到搭档的行和分数；管理员 / QA 不受限。
+  const selfSlotOf = (
+    flow: ReturnType<typeof getReviewFlow>,
+  ): "A" | "B" | "C" | null => {
+    if (!flow) return null;
+    if (flow.aAssignee === currentEmail || flow.aAnnotator === currentEmail) return "A";
+    if (flow.bAssignee === currentEmail || flow.bAnnotator === currentEmail) return "B";
+    if (flow.cReviewer === currentEmail) return "C";
+    return null;
+  };
+
   // Simplified per-slot status: Unassigned / Assigned / Submitted (No QC) /
   // Waiting for QC / QC Completed. A row reads the A slot, the expanded B row
   // reads the B slot. "Waiting for QC" = sampled into QC but C hasn't finalized.
@@ -327,22 +339,36 @@ export default function TaskDetail() {
                   const sampled = flow?.sampledForQC === true;
                   const cReviewer = flow?.cReviewer;
                   const cBot = flow?.cResult?.bot;
+                  // 盲检隔离：供应商只能看到自己那一格。若当前是 vendor 且自己不是 A，
+                  // 主行就渲染成"自己的槽位"（B / C），并且不展开搭档的行——彻底看不到
+                  // 对方的身份和分数。管理员 / QA（!vendor）保持看全部。
+                  const selfSlot = vendor ? selfSlotOf(flow) : null;
+                  const blindHideOther = vendor && selfSlot !== null && selfSlot !== "A";
+                  // 主行展示用的槽位角色、评分源、评审人、tag。
+                  const rowSlot: "A" | "B" | "C" = blindHideOther ? selfSlot! : "A";
+                  const rowBot =
+                    rowSlot === "B" ? flow?.bResult?.bot
+                    : rowSlot === "C" ? flow?.cResult?.bot
+                    : s.bot;
+                  const rowReviewer =
+                    rowSlot === "B" ? bReviewer : rowSlot === "C" ? cReviewer : aReviewer;
                   // Expandable when there's a B slot (back-to-back) or a C/QC slot.
-                  const canExpand = isBackToBack || sampled;
+                  // 盲检隔离下，vendor 看不到搭档行，禁止展开。
+                  const canExpand = !blindHideOther && (isBackToBack || sampled);
                   const isOpen = expanded.has(s.sessionId);
 
                   // No more "annotate vs review" distinction — A and B annotate
-                  // at the same time. The row's own action is always the A slot
-                  // (annotate / edit own / read-only view when finalized).
-                  // 权限账号例外：即使定案了，A 入口也保持可编辑。
-                  const aEditable = !isFinal || privileged;
-                  const aActionRole: "A" | null = aEditable ? "A" : null;
-                  const aActionHref = aActionRole
-                    ? `/annotate/${s.sessionId}?role=A`
+                  // at the same time. The row's own action targets the viewer's
+                  // slot: A for everyone by default; for a vendor whose own slot
+                  // is B / C (blind isolation), the row action targets that slot.
+                  // 权限账号例外：即使定案了，入口也保持可编辑。
+                  const rowEditable = !isFinal || privileged;
+                  const rowActionHref = rowEditable
+                    ? `/annotate/${s.sessionId}?role=${rowSlot}`
                     : `/annotate/${s.sessionId}?view=1`;
-                  const aActionLabel = aEditable ? "Annotate" : "View";
+                  const rowActionLabel = rowEditable ? "Annotate" : "View";
 
-                  const bot = s.bot;
+                  const bot = rowBot;
                   const isSel = selected.has(s.sessionId);
                   return (
                     <Fragment key={s.sessionId}>
@@ -375,7 +401,14 @@ export default function TaskDetail() {
                         >
                           {s.sessionId}
                         </button>
-                        {isBackToBack && <div className="mt-0.5 text-[10px] font-medium text-brand">A · {shortName(aReviewer) ?? "—"}</div>}
+                        {blindHideOther ? (
+                          <div className="mt-0.5 flex items-center gap-1.5">
+                            <span className="text-[10px] font-medium text-brand">{rowSlot} · {shortName(rowReviewer) ?? "—"}</span>
+                            {rowSlot === "B" && <Badge tone="neutral">盲检</Badge>}
+                          </div>
+                        ) : (
+                          isBackToBack && <div className="mt-0.5 text-[10px] font-medium text-brand">A · {shortName(aReviewer) ?? "—"}</div>
+                        )}
                       </td>
                       <td className="px-3 py-3 text-subtle">{s.serviceSubtype}</td>
                       <td className="px-3 py-3">
@@ -437,13 +470,19 @@ export default function TaskDetail() {
                           className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-subtle hover:border-brand/40 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <User className="h-3.5 w-3.5" />
-                          {s.qaOwner ?? "Assign"}
+                          {blindHideOther ? (shortName(rowReviewer) ?? "—") : (s.qaOwner ?? "Assign")}
                         </button>
-                        {flow?.aAnnotator && (
-                          <div className="mt-1 text-[11px] text-muted">
-                            实际 Annotator: {flow.aAnnotator}
-                          </div>
-                        )}
+                        {rowSlot === "B"
+                          ? flow?.bAnnotator && (
+                              <div className="mt-1 text-[11px] text-muted">
+                                实际 Annotator: {flow.bAnnotator}
+                              </div>
+                            )
+                          : flow?.aAnnotator && (
+                              <div className="mt-1 text-[11px] text-muted">
+                                实际 Annotator: {flow.aAnnotator}
+                              </div>
+                            )}
                       </td>
 
                       <td className="px-3 py-3">
@@ -451,7 +490,8 @@ export default function TaskDetail() {
                           <Badge tone="neutral">{s.sopStatus}</Badge>
                         ) : (
                           (() => {
-                            const st = slotStatus(flow, "A");
+                            // 盲检隔离下，vendor 的状态列反映自己的槽位；否则看 A 槽位。
+                            const st = slotStatus(flow, rowSlot === "B" ? "B" : "A");
                             return <Badge tone={st.tone}>{st.label}</Badge>;
                           })()
                         )}
@@ -462,9 +502,9 @@ export default function TaskDetail() {
                           <Button
                             variant="ghost"
                             icon={Edit3}
-                            onClick={() => navigate(aActionHref)}
+                            onClick={() => navigate(rowActionHref)}
                           >
-                            {aActionLabel}
+                            {rowActionLabel}
                           </Button>
                           <button
                             onClick={() => setLogSession(s)}
@@ -480,7 +520,7 @@ export default function TaskDetail() {
                     {/* Expanded "B version" row — same session, B's slot.
                         Only slightly darker than the row above; identical layout
                         and states as the A row. */}
-                    {isBackToBack && isOpen && (
+                    {canExpand && isBackToBack && isOpen && (
                       <tr className="border-b border-line bg-gray-100 last:border-0">
                         <td className="sticky left-0 z-10 bg-gray-100 px-3 py-3" />
                         <td className="px-3 py-3">
@@ -583,7 +623,7 @@ export default function TaskDetail() {
                         Shown for sampled cases. Do QC opens the annotation page
                         as role=C (blank-slate review with A/B reference); View QC
                         opens it read-only. */}
-                    {sampled && isOpen && (
+                    {canExpand && sampled && isOpen && (
                       <tr className="border-b border-line bg-brand-light/30 last:border-0">
                         <td className="sticky left-0 z-10 bg-brand-light/30 px-3 py-3" />
                         <td className="px-3 py-3">
