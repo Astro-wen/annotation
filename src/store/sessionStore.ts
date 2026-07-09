@@ -11,7 +11,7 @@ import { reviewFlows as defaultReviewFlows } from "@/mock/reviewFlow";
 import { diffDims } from "@/lib/diff";
 import { isPrivileged } from "@/lib/currentUser";
 
-const STORAGE_KEY = "bytehi-cycle-state-v9";
+const STORAGE_KEY = "bytehi-cycle-state-v10";
 
 interface PersistShape {
   sessions: SessionRow[];
