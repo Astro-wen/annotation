@@ -89,16 +89,24 @@ export default function TaskDetail() {
   // reads the B slot. "Waiting for QC" = sampled into QC but C hasn't finalized.
   const slotStatus = (
     flow: ReturnType<typeof getReviewFlow>,
-    slot: "A" | "B",
+    slot: "A" | "B" | "C",
   ): { label: string; tone: "neutral" | "brand" | "success" | "warning" | "danger" } => {
     if (!flow) return { label: "Unassigned", tone: "neutral" };
+    // C (QC) slot has its own lifecycle.
+    if (slot === "C") {
+      if (flow.currentState === "Final Result Ready" && flow.cResultStatus === "Submitted")
+        return { label: "QC Completed", tone: "success" };
+      if (flow.cReviewer) return { label: "QC In Progress", tone: "warning" };
+      return { label: "Unassigned", tone: "neutral" };
+    }
     const assignee = slot === "A" ? flow.aAssignee ?? flow.aAnnotator : flow.bAssignee ?? flow.bAnnotator;
     const submitted = slot === "A" ? flow.aResultStatus === "Submitted" : flow.bResultStatus === "Submitted";
     // "QC Completed" only applies to a slot that actually submitted and got finalized.
     // A B slot that never evaluated stays Assigned/Unassigned even post-finalize.
     if (flow.currentState === "Final Result Ready" && submitted) return { label: "QC Completed", tone: "success" };
-    // A/B double-blind disagreement waiting for QA to reconcile — surfaced on the A slot.
-    if (slot === "A" && flow.reconcileStatus === "Pending") return { label: "待拉齐（Diff）", tone: "danger" };
+    // A/B double-blind disagreement waiting for reconcile — surfaced on BOTH A and B
+    // slots (拉齐时解盲，A、B 各自都能在自己行看到"待拉齐"并进入拉齐)。
+    if (flow.reconcileStatus === "Pending" && submitted) return { label: "待拉齐（Diff）", tone: "danger" };
     // Sampled into QC but not yet finalized — surfaced on the A slot only.
     if (slot === "A" && flow.sampledForQC && submitted) return { label: "Waiting for QC", tone: "warning" };
     if (submitted) return { label: "Submitted (No QC)", tone: "success" };
@@ -339,22 +347,25 @@ export default function TaskDetail() {
                   const sampled = flow?.sampledForQC === true;
                   const cReviewer = flow?.cReviewer;
                   const cBot = flow?.cResult?.bot;
-                  // 盲检隔离：供应商只能看到自己那一格。若当前是 vendor 且自己不是 A，
-                  // 主行就渲染成"自己的槽位"（B / C），并且不展开搭档的行——彻底看不到
-                  // 对方的身份和分数。管理员 / QA（!vendor）保持看全部。
+                  // 盲检隔离（对 A / B 对称）：供应商只能看到自己那一格。
+                  // 无论自己是 A、B 还是 C，主行都渲染成"自己的槽位"，并且不展开
+                  // 搭档的行——彻底看不到对方的身份和分数。管理员 / QA（!vendor）看全部。
                   const selfSlot = vendor ? selfSlotOf(flow) : null;
-                  const blindHideOther = vendor && selfSlot !== null && selfSlot !== "A";
+                  const blindSelf = vendor && selfSlot !== null;
                   // 主行展示用的槽位角色、评分源、评审人、tag。
-                  const rowSlot: "A" | "B" | "C" = blindHideOther ? selfSlot! : "A";
+                  const rowSlot: "A" | "B" | "C" = blindSelf ? selfSlot! : "A";
                   const rowBot =
                     rowSlot === "B" ? flow?.bResult?.bot
                     : rowSlot === "C" ? flow?.cResult?.bot
                     : s.bot;
                   const rowReviewer =
                     rowSlot === "B" ? bReviewer : rowSlot === "C" ? cReviewer : aReviewer;
+                  // 待拉齐：A/B 都提交且不一致。此时解盲——A、B、管理员都能看到 diff
+                  // 并执行拉齐。供应商在自己的主行上就能看到这个状态和入口。
+                  const pendingReconcile = flow?.reconcileStatus === "Pending";
                   // Expandable when there's a B slot (back-to-back) or a C/QC slot.
-                  // 盲检隔离下，vendor 看不到搭档行，禁止展开。
-                  const canExpand = !blindHideOther && (isBackToBack || sampled);
+                  // 供应商看不到搭档行，禁止展开；管理员保留。
+                  const canExpand = !blindSelf && (isBackToBack || sampled);
                   const isOpen = expanded.has(s.sessionId);
 
                   // No more "annotate vs review" distinction — A and B annotate
@@ -401,10 +412,14 @@ export default function TaskDetail() {
                         >
                           {s.sessionId}
                         </button>
-                        {blindHideOther ? (
+                        {blindSelf ? (
                           <div className="mt-0.5 flex items-center gap-1.5">
                             <span className="text-[10px] font-medium text-brand">{rowSlot} · {shortName(rowReviewer) ?? "—"}</span>
-                            {rowSlot === "B" && <Badge tone="neutral">盲检</Badge>}
+                            {/* 作答阶段（back-to-back 且尚未拉齐/未定案）对 A、B 都是盲检；
+                                拉齐或定案后解盲，去掉 tag。 */}
+                            {isBackToBack && rowSlot !== "C" && !pendingReconcile && !isFinal && (
+                              <Badge tone="neutral">盲检</Badge>
+                            )}
                           </div>
                         ) : (
                           isBackToBack && <div className="mt-0.5 text-[10px] font-medium text-brand">A · {shortName(aReviewer) ?? "—"}</div>
@@ -470,19 +485,21 @@ export default function TaskDetail() {
                           className="flex items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs text-subtle hover:border-brand/40 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <User className="h-3.5 w-3.5" />
-                          {blindHideOther ? (shortName(rowReviewer) ?? "—") : (s.qaOwner ?? "Assign")}
+                          {blindSelf ? (shortName(rowReviewer) ?? "—") : (s.qaOwner ?? "Assign")}
                         </button>
-                        {rowSlot === "B"
-                          ? flow?.bAnnotator && (
-                              <div className="mt-1 text-[11px] text-muted">
-                                实际 Annotator: {flow.bAnnotator}
-                              </div>
-                            )
-                          : flow?.aAnnotator && (
-                              <div className="mt-1 text-[11px] text-muted">
-                                实际 Annotator: {flow.aAnnotator}
-                              </div>
-                            )}
+                        {(() => {
+                          // 主行 Annotator 按当前展示的槽位显示：vendor 看自己那一格，
+                          // 管理员默认看 A。C 槽位显示复核人。
+                          const who =
+                            rowSlot === "B" ? flow?.bAnnotator
+                            : rowSlot === "C" ? flow?.cReviewer
+                            : flow?.aAnnotator;
+                          return who ? (
+                            <div className="mt-1 text-[11px] text-muted">
+                              实际 Annotator: {who}
+                            </div>
+                          ) : null;
+                        })()}
                       </td>
 
                       <td className="px-3 py-3">
@@ -490,8 +507,8 @@ export default function TaskDetail() {
                           <Badge tone="neutral">{s.sopStatus}</Badge>
                         ) : (
                           (() => {
-                            // 盲检隔离下，vendor 的状态列反映自己的槽位；否则看 A 槽位。
-                            const st = slotStatus(flow, rowSlot === "B" ? "B" : "A");
+                            // 状态列反映当前展示的槽位：vendor 看自己，管理员看 A。
+                            const st = slotStatus(flow, rowSlot);
                             return <Badge tone={st.tone}>{st.label}</Badge>;
                           })()
                         )}
@@ -499,13 +516,24 @@ export default function TaskDetail() {
                       </td>
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-1">
-                          <Button
-                            variant="ghost"
-                            icon={Edit3}
-                            onClick={() => navigate(rowActionHref)}
-                          >
-                            {rowActionLabel}
-                          </Button>
+                          {pendingReconcile && rowSlot !== "C" ? (
+                            // 待拉齐：A、B、管理员都能在自己主行看到并进入拉齐（解盲）。
+                            <button
+                              onClick={() => setReconcileSession(s)}
+                              className="rounded-md bg-danger px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+                              title="A/B 结果不一致，拉齐后进入 QC 池"
+                            >
+                              拉齐 Diff
+                            </button>
+                          ) : (
+                            <Button
+                              variant="ghost"
+                              icon={Edit3}
+                              onClick={() => navigate(rowActionHref)}
+                            >
+                              {rowActionLabel}
+                            </Button>
+                          )}
                           <button
                             onClick={() => setLogSession(s)}
                             className="rounded-md p-1.5 text-subtle hover:bg-gray-100 hover:text-ink"
