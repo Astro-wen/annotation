@@ -14,7 +14,7 @@ import { useCurrentUserStore, USER_OPTIONS, isPrivileged, isVendor, isAdmin } fr
 import { caseVisibleTo } from "@/lib/access";
 import { useSessionStore } from "@/store/sessionStore";
 import { useRubricStore } from "@/store/rubricStore";
-import { caseAccuracy, diffDims } from "@/lib/diff";
+import { caseAccuracy, diffDims, aggregateAccuracy } from "@/lib/diff";
 import { computeActorScore } from "@/lib/scoring";
 
 const extractLastUpdatedAt = (text?: string) => {
@@ -42,6 +42,9 @@ export default function TaskDetail() {
   const [humanFilter, setHumanFilter] = useState("All");
   // QC lifecycle filter: All / Waiting for QC (sampled, not finalized) / QC Completed.
   const [qcFilter, setQcFilter] = useState("All");
+  // Annotator filter: narrow the list to cases a given person worked on (any
+  // A/B/C slot). Drives the per-annotator QC accuracy readout.
+  const [annotatorFilter, setAnnotatorFilter] = useState("All");
   // "只看我的任务": only rows where the current account is assigned to any slot (A/B/C).
   const [mineOnly, setMineOnly] = useState(false);
   // Expanded back-to-back rows (each expands a dark "B version" row below it).
@@ -147,9 +150,47 @@ export default function TaskDetail() {
         if (qcFilter === "Waiting for QC" && !waiting) return false;
         if (qcFilter === "QC Completed" && !finalized) return false;
       }
+      if (annotatorFilter !== "All") {
+        const flow = getReviewFlow(s.sessionId);
+        const people = [
+          flow?.aAnnotator ?? flow?.aAssignee,
+          flow?.bAnnotator ?? flow?.bAssignee,
+          flow?.cReviewer,
+        ];
+        if (!people.includes(annotatorFilter)) return false;
+      }
       return true;
     });
-  }, [sessions, imported, task.taskId, subtypeFilter, sourceFilter, passFilter, problemTypeFilter, humanFilter, qcFilter, mineOnly, currentEmail, getReviewFlow, vendor]);
+  }, [sessions, imported, task.taskId, subtypeFilter, sourceFilter, passFilter, problemTypeFilter, humanFilter, qcFilter, annotatorFilter, mineOnly, currentEmail, getReviewFlow, vendor]);
+
+  // Annotators present in this task (any A/B/C slot), for the annotator filter.
+  const annotatorOptions = useMemo(() => {
+    const set = new Set<string>();
+    sessions
+      .filter((s) => imported || s.taskId === task.taskId)
+      .forEach((s) => {
+        const flow = getReviewFlow(s.sessionId);
+        [
+          flow?.aAnnotator ?? flow?.aAssignee,
+          flow?.bAnnotator ?? flow?.bAssignee,
+          flow?.cReviewer,
+        ].forEach((p) => p && set.add(p));
+      });
+    return ["All", ...Array.from(set)];
+  }, [sessions, imported, task.taskId, getReviewFlow]);
+
+  // QC accuracy over the currently filtered rows, under the all-correct rule
+  // (fully-correct cases / QC'd cases). When an annotator is selected this is
+  // THAT person's accuracy: each case is scored against their own submitted
+  // round (A or B), not the case's agreed result — so filtering by A still
+  // surfaces A's blind partner B in the list, but the number stays about A.
+  // Recomputes live as filters change. Never averages per-case dimension %.
+  const filteredAccuracy = useMemo(() => {
+    const flows = rows
+      .map((r) => getReviewFlow(r.sessionId))
+      .filter((f): f is NonNullable<typeof f> => !!f);
+    return aggregateAccuracy(flows, annotatorFilter === "All" ? undefined : annotatorFilter);
+  }, [rows, getReviewFlow, annotatorFilter]);
 
   // Prune selection / expansion state that no longer maps to a visible row
   // (e.g. after Clear All Data resets the store), so no ghost selected/expanded.
@@ -198,7 +239,7 @@ export default function TaskDetail() {
   const toggleExpandAll = () =>
     setExpanded(() => (allExpanded ? new Set() : new Set(btbIds)));
 
-  const Select = ({ label, value, onChange, options }: { label: string; value: string; onChange: (v: string) => void; options: string[] }) => (
+  const Select = ({ label, value, onChange, options, display }: { label: string; value: string; onChange: (v: string) => void; options: string[]; display?: (v: string) => string }) => (
     <label className="flex items-center gap-2 text-xs text-subtle">
       {label}
       <select
@@ -207,7 +248,7 @@ export default function TaskDetail() {
         className="h-8 rounded-md border border-line bg-white px-2 text-sm text-ink outline-none focus:border-brand"
       >
         {options.map((o) => (
-          <option key={o}>{o}</option>
+          <option key={o} value={o}>{display ? display(o) : o}</option>
         ))}
       </select>
     </label>
@@ -278,6 +319,21 @@ export default function TaskDetail() {
           <Select label="SQS" value={passFilter} onChange={setPassFilter} options={["All", "Pass", "No Pass"]} />
           <Select label="Human Result" value={humanFilter} onChange={setHumanFilter} options={["All", "Has Human", "Bot Only"]} />
           <Select label="QC" value={qcFilter} onChange={setQcFilter} options={["All", "待拉齐（Diff）", "Waiting for QC", "QC Completed"]} />
+          <Select
+            label="Annotator"
+            value={annotatorFilter}
+            onChange={setAnnotatorFilter}
+            options={annotatorOptions}
+            display={(v) => (v === "All" ? "All" : shortName(v) ?? v)}
+          />
+          {annotatorFilter !== "All" && (
+            <span className="text-xs text-subtle" title="Scored against this person's own submitted round (A or B), all-correct rule">
+              {shortName(annotatorFilter) ?? annotatorFilter}&rsquo;s QC Accuracy:{" "}
+              <span className="font-semibold text-ink">
+                {filteredAccuracy === null ? "—" : `${filteredAccuracy.toFixed(1)}%`}
+              </span>
+            </span>
+          )}
           <span className="ml-auto text-xs text-subtle">{rows.length} sessions</span>
         </div>
 

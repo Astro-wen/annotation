@@ -543,6 +543,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         human: result.human,
         ruleVersion: result.ruleVersion,
         annotator: operator,
+        // Problem Type is identified manually by the annotator; persist their
+        // choice onto the row (keep the prior value if not re-selected).
+        problemType: result.problemType ?? get().getSession(sessionId)?.problemType,
       };
 
       if (role === "A") {

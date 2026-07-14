@@ -104,6 +104,16 @@ export default function Annotation() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, reviewRole, viewMode]);
   const [human, setHuman] = useState<ActorState>(emptyActor);
+  // Problem Type (R1 / R2 / R3) is identified manually by the annotator — the
+  // system no longer auto-fills it. Seed from the row's existing value when
+  // viewing / re-editing an already-annotated case; blank for a fresh one.
+  const [problemType, setProblemType] = useState<string>(
+    viewMode ? session?.problemType ?? "" : "",
+  );
+  useEffect(() => {
+    setProblemType(viewMode ? session?.problemType ?? "" : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, reviewRole, viewMode]);
   const [confirmed, setConfirmed] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"sqs" | "ues">("sqs");
@@ -212,7 +222,9 @@ export default function Annotation() {
 
   const botComplete = isComplete(bot);
   const humanComplete = isComplete(human);
-  const requiredFilled = botComplete && (!showHuman || humanComplete);
+  // Problem Type must be picked by the annotator (except in read-only view).
+  const problemTypeFilled = viewMode || problemType !== "";
+  const requiredFilled = botComplete && (!showHuman || humanComplete) && problemTypeFilled;
   const canSubmit = requiredFilled && confirmed && !locked;
 
   const doSubmit = () => {
@@ -225,6 +237,7 @@ export default function Annotation() {
           ruleVersion: version,
           bot: botScore,
           human: showHuman ? humanScore : undefined,
+          problemType,
         },
         currentEmail,
         reviewRole,
@@ -304,7 +317,6 @@ export default function Annotation() {
                   ["Knowledge Source", session.knowledgeSource],
                   ["Language", session.language],
                   ["Region", session.regionCode],
-                  ["Problem Type", session.problemType ?? "—"],
                   ["Signal Priority", session.signalPriority ?? "—"],
                 ].map(([k, v]) => (
                   <div key={k}>
@@ -314,6 +326,47 @@ export default function Annotation() {
                 ))}
               </dl>
             </Collapsible>
+
+            {/* Problem Type is identified manually by the annotator (R1 / R2 /
+                R3), no longer auto-filled by the system. It drives the
+                Solution Adoption scoring context and is required before submit. */}
+            <div className="border-b border-line bg-white px-5 py-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-ink">Problem Type</p>
+                  <p className="mt-0.5 text-xs text-muted">
+                    Identify the resolution type — drives Solution Adoption scoring.
+                  </p>
+                </div>
+                {locked ? (
+                  <Badge tone="brand">{problemType || session.problemType || "—"}</Badge>
+                ) : (
+                  <div className="flex gap-2">
+                    {[
+                      { v: "R1 Information", label: "R1 · Information" },
+                      { v: "R2 Personalized Info", label: "R2 · Personalized" },
+                      { v: "R3 Operation", label: "R3 · Operation" },
+                    ].map((o) => (
+                      <button
+                        key={o.v}
+                        type="button"
+                        onClick={() => setProblemType(o.v)}
+                        className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
+                          problemType === o.v
+                            ? "border-brand bg-brand-light text-brand"
+                            : "border-line text-ink hover:bg-page"
+                        }`}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {!locked && problemType === "" && (
+                <p className="mt-2 text-xs text-warning">Please select a Problem Type before submitting.</p>
+              )}
+            </div>
 
             {/* QC reference: C annotates on a blank slate, but can see the
                 annotation result here as read-only reference. By the time a case
@@ -359,7 +412,7 @@ export default function Annotation() {
               onTab={setActiveTab}
               subtype={session.serviceSubtype}
               isSOP={isSOP}
-              problemType={session.problemType}
+              problemType={problemType || session.problemType}
               signalPriority={session.signalPriority}
             />
 
@@ -378,7 +431,7 @@ export default function Annotation() {
                 onTab={setActiveHumanTab}
                 subtype={session.serviceSubtype}
                 isSOP={isSOP}
-                problemType={session.problemType}
+                problemType={problemType || session.problemType}
                 signalPriority={session.signalPriority}
               />
             )}

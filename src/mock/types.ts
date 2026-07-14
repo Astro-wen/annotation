@@ -90,6 +90,8 @@ export interface ReviewAnnotationResult {
   ruleVersion: number;
   bot: ActorScore;
   human?: ActorScore;
+  /** Problem Type (R1 / R2 / R3) identified by the annotator during annotation. */
+  problemType?: string;
 }
 
 export interface ReviewFlow {

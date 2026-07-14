@@ -15,7 +15,7 @@ import type { CaseSet, SessionRow } from "@/mock/types";
 import { useSessionStore } from "@/store/sessionStore";
 import { useCurrentUserStore, isVendor } from "@/lib/currentUser";
 import { caseVisibleTo } from "@/lib/access";
-import { caseAccuracy } from "@/lib/diff";
+import { aggregateAccuracy } from "@/lib/diff";
 
 export default function Home() {
   const navigate = useNavigate();
@@ -110,9 +110,10 @@ export default function Home() {
     const sqsPassRate =
       n === 0 ? "—" : `${((scored.filter((s) => s.bot!.sqsPass).length / n) * 100).toFixed(1)}%`;
 
-    // QC Accuracy: dimension-level average across C-finalized cases in this
-    // task. Each case scores "matched dims / compared dims" (see caseAccuracy),
-    // then those are equal-weighted — identical to the QC drawer's number.
+    // QC Accuracy: all-correct rule across C-finalized cases in this task. A
+    // case counts only when every compared dimension matches (7-of-7); one
+    // mismatch makes the whole case wrong. Accuracy = fully-correct / QC'd.
+    // Never average the per-case dimension percentages — that runs high.
     const finalized = reviewFlows.filter(
       (f) =>
         f.currentState === "Final Result Ready" &&
@@ -120,13 +121,8 @@ export default function Home() {
         f.cResult &&
         sessions.some((s) => s.sessionId === f.sessionId && s.taskId === taskId),
     );
-    const perCase = finalized
-      .map((f) => caseAccuracy(f))
-      .filter((v): v is number => v !== null);
-    const qcAccuracy =
-      perCase.length === 0
-        ? "—"
-        : `${(perCase.reduce((a, b) => a + b, 0) / perCase.length).toFixed(1)}%`;
+    const acc = aggregateAccuracy(finalized);
+    const qcAccuracy = acc === null ? "—" : `${acc.toFixed(1)}%`;
 
     return {
       total,
@@ -293,11 +289,11 @@ export default function Home() {
                       <th className="px-4 py-3 font-medium">Source</th>
                       <th className="px-4 py-3 font-medium">Task Type</th>
                       <th className="px-4 py-3 font-medium">Task Name</th>
-                      <th className="px-4 py-3 font-medium">B2B</th>
+                      <th className="px-4 py-3 font-medium">Back-to-Back</th>
                       <th className="px-4 py-3 font-medium">Cases</th>
                       <th className="px-4 py-3 font-medium">Assigned</th>
                       <th className="px-4 py-3 font-medium">Annotation Rate</th>
-                      <th className="px-4 py-3 font-medium">B2B Complete Rate</th>
+                      <th className="px-4 py-3 font-medium">Back-to-Back Complete Rate</th>
                       <th className="px-4 py-3 font-medium">QC Complete</th>
                       <th className="px-4 py-3 font-medium">SQS Pass Rate</th>
                       <th className="px-4 py-3 font-medium">SQS Avg</th>
@@ -327,7 +323,7 @@ export default function Home() {
                             {(() => {
                               const mode = taskMode(t.taskId);
                               if (mode === "Unassigned") return <Badge tone="neutral">未分配</Badge>;
-                              if (mode === "B2B") return <Badge tone="brand">B2B</Badge>;
+                              if (mode === "B2B") return <Badge tone="brand">Back-to-Back</Badge>;
                               return <Badge tone="success">Normal</Badge>;
                             })()}
                           </td>
