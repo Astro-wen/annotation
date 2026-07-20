@@ -1,4 +1,11 @@
-import type { ActorScore, KnowledgeSource, ServiceSubtype, SessionRow } from "@/mock/types";
+import type {
+  CaseRow,
+  CaseType,
+  ExpectedResult,
+  KnowledgeSource,
+  ServiceSubtype,
+} from "@/mock/types";
+import { ANNOTATION_CATEGORY_BY_TYPE } from "@/mock/sessions";
 
 /** Parse raw CSV text into rows of string cells. Handles quoted fields and escaped quotes. */
 export function parseCsvText(text: string): string[][] {
@@ -48,17 +55,6 @@ export function parseCsvText(text: string): string[][] {
   return rows.filter((r) => r.some((cell) => cell.trim() !== ""));
 }
 
-const num = (v?: string): number | undefined => {
-  if (v === undefined || v.trim() === "") return undefined;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : undefined;
-};
-
-const normSubtype = (v?: string): ServiceSubtype => {
-  const s = (v ?? "").toLowerCase();
-  return s.includes("ticket") ? "Ticketbot" : "Chatbot";
-};
-
 const normSource = (v?: string): KnowledgeSource => {
   const s = (v ?? "").toLowerCase();
   if (s.includes("faq")) return "FAQ";
@@ -66,9 +62,10 @@ const normSource = (v?: string): KnowledgeSource => {
   return "Skill";
 };
 
-const truthy = (v?: string): boolean => {
-  const s = (v ?? "").trim().toLowerCase();
-  return s === "true" || s === "1" || s === "yes" || s === "y";
+const normCaseType = (v?: string): CaseType => {
+  const n = Number((v ?? "").trim());
+  if (Number.isInteger(n) && n >= 1 && n <= 8) return n as CaseType;
+  return 1;
 };
 
 /** Map a header label to a canonical key. */
@@ -85,40 +82,68 @@ const HEADER_ALIASES: Record<string, string> = {
   lang: "language",
   region: "regionCode",
   region_code: "regionCode",
-  service_subtype: "serviceSubtype",
-  subtype: "serviceSubtype",
   knowledge_source: "knowledgeSource",
   source: "knowledgeSource",
-  problem_type: "problemType",
-  signal_priority: "signalPriority",
-  qa_owner: "qaOwner",
-  annotator: "annotator",
-  understanding_accuracy: "understanding_accuracy",
-  execution_correctness: "execution_correctness",
-  solution_adoption: "solution_adoption",
-  responsiveness: "responsiveness",
-  service_efficiency: "service_efficiency",
-  language_quality: "language_quality",
-  service_outcome_expectation: "service_outcome_expectation",
-  expectation_achievement: "service_outcome_expectation",
-  sop_status: "sopStatus",
-  status: "status",
-  latest_activity_log: "latestActivityLog",
-  has_human_transfer: "hasHumanTransfer",
-  bot_to_human: "hasHumanTransfer",
+  annotation_category: "annotationCategory",
+  category: "category",
+  merge_id: "mergeId",
+  mergeid: "mergeId",
+  source_record_ids: "sourceRecordIds",
+  case_type: "caseType",
+  casetype: "caseType",
+  service_subtypes: "serviceSubtypes",
 };
 
+// Type -> expected results, mirroring expectedResultsForType in sessions.ts.
+// Chatbot/Ticketbot use the AI form; Human uses the Human form. The first
+// result is DIRECT, later results are TRANSFERRED.
+function expectedResultsForType(caseType: CaseType, caseId: string): ExpectedResult[] {
+  const mk = (
+    n: number,
+    resultType: ExpectedResult["resultType"],
+    subtypes: ServiceSubtype[],
+    entryMode: ExpectedResult["entryMode"],
+  ): ExpectedResult => ({
+    resultId: `${caseId}-R${n}`,
+    resultType,
+    serviceSubtypes: subtypes,
+    entryMode,
+    formTemplate: resultType === "Human" ? "Human" : "AI",
+    coveredSourceIds: subtypes.map((s) => `${caseId}-${s}`),
+  });
+  switch (caseType) {
+    case 1:
+      return [mk(1, "Chatbot", ["CHATBOT"], "DIRECT")];
+    case 2:
+      return [mk(1, "Chatbot", ["CHATBOT"], "DIRECT"), mk(2, "Ticketbot", ["TICKETBOT"], "TRANSFERRED")];
+    case 3:
+      return [mk(1, "Ticketbot", ["TICKETBOT"], "DIRECT")];
+    case 4:
+      return [mk(1, "Chatbot", ["CHATBOT"], "DIRECT"), mk(2, "Human", ["HUMAN_IM"], "TRANSFERRED")];
+    case 5:
+      return [mk(1, "Ticketbot", ["TICKETBOT"], "DIRECT"), mk(2, "Human", ["HUMAN_TICKET"], "TRANSFERRED")];
+    case 6:
+      return [mk(1, "Human", ["HUMAN_IM"], "DIRECT")];
+    case 7:
+      return [mk(1, "Human", ["HUMAN_TICKET"], "DIRECT")];
+    case 8:
+      return [mk(1, "Chatbot", ["CHATBOT"], "DIRECT"), mk(2, "Human", ["HUMAN_TICKET"], "TRANSFERRED")];
+    default:
+      return [mk(1, "Chatbot", ["CHATBOT"], "DIRECT")];
+  }
+}
+
 export interface ParseResult {
-  sessions: SessionRow[];
+  cases: CaseRow[];
   errors: string[];
 }
 
-/** Parse CSV text into SessionRow[] with validation messages. */
-export function parseSessionsCsv(text: string): ParseResult {
+/** Parse CSV text into CaseRow[] with validation messages. */
+export function parseCasesCsv(text: string): ParseResult {
   const rows = parseCsvText(text);
   const errors: string[] = [];
   if (rows.length < 2) {
-    return { sessions: [], errors: ["CSV is empty or has no data rows."] };
+    return { cases: [], errors: ["CSV is empty or has no data rows."] };
   }
 
   const headerRow = rows[0];
@@ -128,7 +153,11 @@ export function parseSessionsCsv(text: string): ParseResult {
     errors.push("Missing required column: session_id.");
   }
 
-  const sessions: SessionRow[] = [];
+  const cases: CaseRow[] = [];
+  // Dedup key: taskId + caseType + first source record id.
+  const seen = new Set<string>();
+  const seqByTask: Record<string, number> = {};
+
   for (let r = 1; r < rows.length; r++) {
     const cells = rows[r];
     const rec: Record<string, string> = {};
@@ -141,63 +170,49 @@ export function parseSessionsCsv(text: string): ParseResult {
       continue;
     }
 
-    // Build a bot ActorScore from any provided dimension columns.
-    const dimKeys = [
-      "understanding_accuracy",
-      "execution_correctness",
-      "solution_adoption",
-      "responsiveness",
-      "service_efficiency",
-      "language_quality",
-      "service_outcome_expectation",
-    ];
-    const scores: Record<string, number> = {};
-    let hasAnyScore = false;
-    for (const k of dimKeys) {
-      const v = num(rec[k]);
-      if (v !== undefined) {
-        scores[k] = v;
-        hasAnyScore = true;
-      }
-    }
-    let bot: ActorScore | undefined;
-    if (hasAnyScore) {
-      const sqsKeys = dimKeys.slice(0, 6);
-      const sqsVals = sqsKeys.map((k) => scores[k] ?? 0);
-      const sqsTotal = sqsVals.reduce((a, b) => a + b, 0) / sqsKeys.length;
-      const uesTotal = scores["service_outcome_expectation"] ?? 0;
-      bot = {
-        scores,
-        sqsTotal,
-        sqsPass: sqsTotal >= 2,
-        uesTotal,
-        uesPass: uesTotal >= 2,
-        userSatisfaction: (sqsTotal + uesTotal) / 2,
-      };
-    }
+    const taskId = rec.taskId || "TASK-IMPORTED";
+    const caseType = normCaseType(rec.caseType);
+    const sourceRecordIds = (rec.sourceRecordIds || "")
+      .split(/[|;]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const primaryRecordId = sourceRecordIds[0] || rec.sessionId;
 
-    sessions.push({
+    const dedupKey = `${taskId}::${caseType}::${primaryRecordId}`;
+    if (seen.has(dedupKey)) {
+      errors.push(`Row ${r + 1}: skipped (duplicate case_type + source record ${primaryRecordId}).`);
+      continue;
+    }
+    seen.add(dedupKey);
+
+    const seq = (seqByTask[taskId] = (seqByTask[taskId] ?? 0) + 1);
+    const caseId = `${taskId}-C${String(seq).padStart(3, "0")}`;
+    const expectedResults = expectedResultsForType(caseType, caseId);
+    const transferToHuman = expectedResults.some(
+      (r2) => r2.resultType === "Human" && r2.entryMode === "TRANSFERRED",
+    );
+
+    cases.push({
+      caseId,
       sessionId: rec.sessionId,
-      taskId: rec.taskId || "TASK-IMPORTED",
+      taskId,
+      caseType,
+      knowledgeSource: normSource(rec.knowledgeSource),
+      annotationCategory: rec.annotationCategory || ANNOTATION_CATEGORY_BY_TYPE[caseType],
+      category: rec.category || `cat-${caseType}`,
+      mergeId: rec.mergeId || `MG-${taskId}-${seq}`,
+      sourceRecordIds: sourceRecordIds.length > 0 ? sourceRecordIds : expectedResults.flatMap((e) => e.coveredSourceIds),
       language: rec.language || "—",
       regionCode: rec.regionCode || "—",
-      serviceSubtype: normSubtype(rec.serviceSubtype),
-      knowledgeSource: normSource(rec.knowledgeSource),
-      problemType: rec.problemType || undefined,
-      signalPriority: rec.signalPriority || undefined,
-      qaOwner: rec.qaOwner || undefined,
-      annotator: rec.annotator || undefined,
-      bot,
-      sopStatus: rec.sopStatus || undefined,
-      status: rec.status || "Imported",
-      latestActivityLog: rec.latestActivityLog || `Imported from CSV at row ${r + 1}`,
-      hasHumanTransfer: rec.hasHumanTransfer !== undefined ? truthy(rec.hasHumanTransfer) : undefined,
+      transferToHuman,
+      expectedResults,
+      ruleVersion: 1,
     });
   }
 
-  if (sessions.length === 0 && errors.length === 0) {
-    errors.push("No valid session rows found.");
+  if (cases.length === 0 && errors.length === 0) {
+    errors.push("No valid case rows found.");
   }
 
-  return { sessions, errors };
+  return { cases, errors };
 }

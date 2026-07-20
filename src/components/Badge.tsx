@@ -34,8 +34,11 @@ export default function Badge({
 
 export function statusTone(status: string): Tone {
   const s = status.toLowerCase();
-  if (s.includes("final result ready") || s.includes("submitted")) return "success";
-  if (s.includes("pending") || s.includes("review")) return "warning";
-  if (s.includes("evidence")) return "neutral";
+  if (s.includes("invalid")) return "neutral";
+  if (s.includes("diff") || s.includes("待拉齐")) return "danger";
+  if (s.includes("qc completed")) return "success";
+  if (s.includes("waiting for qc")) return "warning";
+  if (s.includes("submitted")) return "success";
+  if (s.includes("assigned")) return "brand";
   return "neutral";
 }

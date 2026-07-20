@@ -1,29 +1,31 @@
-// New scoring model (English metrics):
-//   SQS = Service Quality Score  = average of 6 dimensions
-//   UES = User Experience Score = 1 dimension (Service Outcome Expectation)
-//   User Satisfaction (North Star) = W_SQS * SQS + W_UES * UES  (equal weights by default)
+// New scoring model (English metrics), PRD-aligned:
+//   SQS = Service Quality Score  = average of 6 SQS dimensions
+//   UEF = User Expectation Fulfillment = 1 independent user-view dimension
+//   UXS = User Experience Score (North Star) = SQS * 0.65 + UEF * 0.35
 //
 // This file only holds the DEFAULT rubric. The editable, live rubric lives in
 // src/store/rubricStore.ts (Settings edits it, Annotation reads from it).
+
+import type { KnowledgeSource } from "@/mock/types";
 
 export interface ReasonOption {
   score: number;
   text: string;
 }
 
-export type RubricGroup = "SQS" | "UES";
+export type RubricGroup = "SQS" | "UEF";
 
 export interface RubricDimension {
-  /** stable id, used for gating references and snapshots */
+  /** stable id, used for snapshots and per-dimension display */
   key: string;
   dimension: string;
   group: RubricGroup;
   /** allowed scores, high -> low */
   options: number[];
   reasons: ReasonOption[];
-  /** machine auto-scored dimension (annotator skips it) */
+  /** machine auto-scored dimension (annotator skips it, read-only value) */
   auto?: boolean;
-  /** enabled/disabled via the Settings slider toggle */
+  /** enabled/disabled via the Settings toggle */
   enabled: boolean;
   /** true for the seeded standard dimensions (cannot be removed, only disabled) */
   builtin: boolean;
@@ -48,6 +50,8 @@ export const defaultRubric: RubricDimension[] = [
     key: "execution_correctness",
     dimension: "Execution Correctness",
     group: "SQS",
+    // Base options; the actual selectable scores depend on Knowledge Source
+    // (Skill = 3/2/1/0, FAQ/SOP = 3/1/0). See executionOptions() below.
     options: [3, 2, 1, 0],
     enabled: true,
     builtin: true,
@@ -113,9 +117,9 @@ export const defaultRubric: RubricDimension[] = [
     ],
   },
   {
-    key: "service_outcome_expectation",
-    dimension: "Service Outcome Expectation",
-    group: "UES",
+    key: "user_expectation_fulfillment",
+    dimension: "User Expectation Fulfillment",
+    group: "UEF",
     options: [3, 2, 1, 0],
     enabled: true,
     builtin: true,
@@ -129,13 +133,22 @@ export const defaultRubric: RubricDimension[] = [
 ];
 
 export const defaultWeights = {
-  /** North Star = sqs * sqsWeight + ues * uesWeight (weights normalized when applied) */
-  sqsWeight: 0.5,
-  uesWeight: 0.5,
+  /** UXS = sqsAvg * sqsWeight + uef * uefWeight (weights normalized when applied) */
+  sqsWeight: 0.65,
+  uefWeight: 0.35,
 };
 
 export const configVersion = {
   version: "v1",
   effectiveFrom: "Effective from 2026-07-01 14:30",
-  scope: "6-dim SQS + 1-dim UES · weighted User Satisfaction (North Star)",
+  scope: "6-dim SQS (65%) + UEF (35%) · User Experience Score (North Star)",
 };
+
+/**
+ * Execution Correctness selectable scores depend on Knowledge Source:
+ *   Skill    -> 3 / 2 / 1 / 0
+ *   FAQ, SOP -> 3 / 1 / 0 (no "2" tier)
+ */
+export function executionOptions(source: KnowledgeSource): number[] {
+  return source === "Skill" ? [3, 2, 1, 0] : [3, 1, 0];
+}

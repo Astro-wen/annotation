@@ -2,8 +2,7 @@ import { useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { caseSets } from "@/mock/caseSets";
 import type { CaseSet } from "@/mock/types";
-
-type TaskType = "Ticket" | "Chatbot";
+import { useSessionStore } from "@/store/sessionStore";
 
 export default function ImportByteHiModal({
   onClose,
@@ -12,19 +11,16 @@ export default function ImportByteHiModal({
   onClose: () => void;
   onConfirm: (task: CaseSet) => void;
 }) {
-  const [taskType, setTaskType] = useState<TaskType | null>(null);
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const cases = useSessionStore((s) => s.cases);
+
+  const countFor = (taskId: string) => cases.filter((c) => c.taskId === taskId).length;
 
   const tasks = useMemo(() => {
-    if (!taskType) return [];
     const q = search.trim().toLowerCase();
-    return caseSets.filter(
-      (t) =>
-        t.taskType === taskType &&
-        (!q || t.taskName.toLowerCase().includes(q)),
-    );
-  }, [taskType, search]);
+    return caseSets.filter((t) => !q || t.taskName.toLowerCase().includes(q));
+  }, [search]);
 
   const selected = tasks.find((t) => t.taskId === selectedId) ?? null;
 
@@ -39,33 +35,14 @@ export default function ImportByteHiModal({
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto px-6 pb-2">
-          <p className="text-sm font-medium text-subtle">Select task type and search task name</p>
+          <p className="text-sm font-medium text-subtle">Search a task name to import its case set</p>
 
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-subtle">Task Type</span>
-            {(["Ticket", "Chatbot"] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => {
-                  setTaskType(t);
-                  setSelectedId(null);
-                }}
-                className={`rounded-md border px-4 py-1.5 text-sm font-medium transition-colors ${
-                  taskType === t
-                    ? "border-brand bg-brand text-white"
-                    : "border-line text-brand hover:bg-page"
-                }`}
-              >
-                {t}
-              </button>
-            ))}
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search task name..."
-              className="h-10 flex-1 rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
-            />
-          </div>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search task name..."
+            className="h-10 w-full rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
+          />
 
           <div className="overflow-hidden rounded-xl border border-line">
             <div className="flex items-center justify-between border-b border-line bg-page px-4 py-3">
@@ -73,9 +50,7 @@ export default function ImportByteHiModal({
               <span className="text-sm text-subtle">{tasks.length} item(s)</span>
             </div>
             <div className="max-h-64 overflow-y-auto">
-              {!taskType ? (
-                <p className="px-4 py-6 text-sm text-subtle">Please select task type first.</p>
-              ) : tasks.length === 0 ? (
+              {tasks.length === 0 ? (
                 <p className="px-4 py-6 text-sm text-subtle">No task matched.</p>
               ) : (
                 tasks.map((t) => (
@@ -91,7 +66,7 @@ export default function ImportByteHiModal({
                       <span className="block font-mono text-xs text-muted">{t.taskId}</span>
                     </span>
                     <span className="text-xs text-subtle">
-                      {t.totalCases} cases · {t.ruleVersion}
+                      {countFor(t.taskId)} cases · {t.ruleVersion}
                     </span>
                   </button>
                 ))

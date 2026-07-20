@@ -1,12 +1,16 @@
 import { create } from "zustand";
 
-const STORAGE_KEY = "bytehi-current-user";
+const STORAGE_KEY = "bytehi-current-user-v2";
 
-// 供应商权限隔离：账号分角色。
-//  - admin：管理员 / QA。能看全部 case、能做分配、能导出全量数据。
-//  - vendor：外部供应商标注员。只能看到分配给自己的 case，不能导出全量。
-// 角色可以有多个人（多个 admin、多个 vendor）。
-export type UserRole = "admin" | "vendor";
+// Phase 1 接入 Kani，只保留两类功能角色（PRD 2.1）：
+//  - editor（标注编辑，默认角色）：查看内部全量 Case；Batch Assign / Assign QA /
+//    Set Sampling；作为 A/B 标注和拉齐；Sampling 冻结前改派 A/B、改自己的当前答案；
+//    对未进 Waiting for QC 的 Case 用 Batch Edit；作为被指派且通过防自审的 C 做 QC；
+//    QC 前 Mark/Restore Invalid；导出并查看团队与个人 Accuracy。受防自审约束。
+//  - admin（标注管理员，全权限）：可 Override 防自审、任务归属、C 指派、阶段锁等，
+//    可任意阶段接管 / 改派 / 提交 / 拉齐 / QC / 修改当前生效结果。
+// A / B / C 是 case 级任务身份，不是权限角色。Phase 1 内部用户可见全量数据。
+export type UserRole = "editor" | "admin";
 
 export interface UserOption {
   email: string;
@@ -17,65 +21,51 @@ export interface UserOption {
 
 export const USER_OPTIONS: UserOption[] = [
   {
-    email: "admin@bytedance.com",
-    label: "管理员（我）",
+    email: "editor.aaron@bytedance.com",
+    label: "Aaron（标注编辑）",
+    shortName: "Aaron",
+    role: "editor",
+  },
+  {
+    email: "editor.usagi@bytedance.com",
+    label: "乌萨奇（标注编辑）",
+    shortName: "Usagi",
+    role: "editor",
+  },
+  {
+    email: "editor.hachi@bytedance.com",
+    label: "小八（标注编辑）",
+    shortName: "Hachi",
+    role: "editor",
+  },
+  {
+    email: "editor.chiikawa@bytedance.com",
+    label: "吉伊（标注编辑）",
+    shortName: "Chiikawa",
+    role: "editor",
+  },
+  {
+    email: "admin.lead@bytedance.com",
+    label: "QA 组长（标注管理员）",
     shortName: "Admin",
-    role: "admin",
-  },
-  {
-    email: "qa.lead@bytedance.com",
-    label: "QA 组长",
-    shortName: "QA Lead",
-    role: "admin",
-  },
-  {
-    email: "vendor.a@partner.com",
-    label: "供应商标注员 A",
-    shortName: "Vendor A",
-    role: "vendor",
-  },
-  {
-    email: "vendor.b@partner.com",
-    label: "供应商标注员 B",
-    shortName: "Vendor B",
-    role: "vendor",
-  },
-  {
-    email: "vendor.c@partner.com",
-    label: "供应商标注员 C",
-    shortName: "Vendor C",
-    role: "vendor",
-  },
-  {
-    email: "quanxian@bytedance.com",
-    label: "权限账号",
-    shortName: "权限账号",
     role: "admin",
   },
 ];
 
-// 权限账号：可以在 QC 定案（Final Result Ready）之后，仍然修改前面 A / B / C 的结果。
-// 普通账号在定案后只能查看，权限账号不受这个锁定限制。
-const PRIVILEGED_EMAILS = new Set<string>(["quanxian@bytedance.com"]);
-
-export function isPrivileged(email: string | null | undefined): boolean {
-  return !!email && PRIVILEGED_EMAILS.has(email);
-}
-
-/** 该账号的角色。找不到时按最严格的 vendor 处理（默认不放行）。 */
+/** 该账号的角色。找不到时按标注编辑处理（Phase 1 内部默认角色）。 */
 export function roleOf(email: string | null | undefined): UserRole {
-  if (!email) return "vendor";
-  return USER_OPTIONS.find((u) => u.email === email)?.role ?? "vendor";
+  if (!email) return "editor";
+  return USER_OPTIONS.find((u) => u.email === email)?.role ?? "editor";
 }
 
-/** 供应商标注员：受硬隔离约束。 */
-export function isVendor(email: string | null | undefined): boolean {
-  return roleOf(email) === "vendor";
-}
-
-/** 管理员 / QA：能看全部、能分配、能导出全量。 */
+/** 标注管理员：全权限，可 Override 防自审 / 阶段锁 / 任务归属。 */
 export function isAdmin(email: string | null | undefined): boolean {
   return roleOf(email) === "admin";
+}
+
+/** 标注编辑：默认作业角色，受防自审与阶段锁约束。 */
+export function isEditor(email: string | null | undefined): boolean {
+  return roleOf(email) === "editor";
 }
 
 function loadCurrentEmail(): string {
@@ -109,4 +99,9 @@ export const useCurrentUserStore = create<CurrentUserStore>((set) => ({
 
 export function getUserOption(email: string): UserOption {
   return USER_OPTIONS.find((user) => user.email === email) ?? USER_OPTIONS[0];
+}
+
+export function shortNameOf(email: string | null | undefined): string {
+  if (!email) return "—";
+  return USER_OPTIONS.find((u) => u.email === email)?.shortName ?? email;
 }

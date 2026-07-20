@@ -6,11 +6,11 @@ import {
   type ReasonOption,
 } from "@/mock/settings";
 
-const STORAGE_KEY = "bytehi-rubric-state-v3";
+const STORAGE_KEY = "bytehi-rubric-state-v4";
 
 export interface RubricWeights {
   sqsWeight: number;
-  uesWeight: number;
+  uefWeight: number;
 }
 
 export interface RubricVersionSnapshot {
@@ -59,8 +59,8 @@ function loadInitial(): PersistShape {
       {
         version: 1,
         at: now(),
-        operator: "admin@bytedance.com",
-        note: "Initial standard rubric (6-dim SQS + 1-dim UES)",
+        operator: "editor.aaron@bytedance.com",
+        note: "Initial standard rubric (6-dim SQS 65% + UEF 35%)",
         rubric: clone(rubric),
         weights: { ...weights },
       },
@@ -70,14 +70,20 @@ function loadInitial(): PersistShape {
 
 export interface NewDimensionInput {
   dimension: string;
-  group: "SQS" | "UES";
+  group: "SQS" | "UEF";
   options: number[];
   reasons: ReasonOption[];
 }
 
 interface RubricStore extends PersistShape {
-  /** dimensions currently enabled (drives Annotation) */
+  /** dimensions currently enabled (drives Annotation for the latest version) */
   activeRubric: () => RubricDimension[];
+  /**
+   * Enabled dimensions for a specific config version. A case set that was
+   * imported under version N keeps showing version N's dimensions even after
+   * a newer rubric is published (rule isolation per PRD).
+   */
+  activeRubricForVersion: (version: number) => RubricDimension[];
   reasonFor: (dimensionKey: string, score: number) => string | undefined;
 
   /** Commit a full edit set atomically, bumping the version and snapshotting. */
@@ -138,6 +144,12 @@ export const useRubricStore = create<RubricStore>((set, get) => {
     ...initial,
 
     activeRubric: () => get().rubric.filter((d) => d.enabled),
+
+    activeRubricForVersion: (version) => {
+      const snap = get().history.find((h) => h.version === version);
+      const rubric = snap ? snap.rubric : get().rubric;
+      return rubric.filter((d) => d.enabled);
+    },
 
     reasonFor: (dimensionKey, score) => {
       const d = get().rubric.find((x) => x.key === dimensionKey);

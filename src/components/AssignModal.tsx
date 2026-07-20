@@ -1,83 +1,60 @@
-import { useMemo, useRef, useState } from "react";
-import { X, Users } from "lucide-react";
-import type { SessionRow } from "@/mock/types";
-import type { AssignConfig, QaAllocation, QaPair } from "@/store/sessionStore";
+import { useState } from "react";
+import { Users, X, Plus, AlertCircle } from "lucide-react";
 import { USER_OPTIONS } from "@/lib/currentUser";
+import type { CaseType } from "@/mock/types";
+import type { DistributeConfig, QaAllocation, QaPair } from "@/store/sessionStore";
+import { ANNOTATION_CATEGORY_BY_TYPE } from "@/mock/sessions";
 
-interface Row {
-  name: string;
-  quantity: string;
+/** Per-Type availability within the current case set (unassigned, non-invalid). */
+export interface TypeAvailability {
+  caseType: CaseType;
+  total: number; // valid cases of this type
+  remaining: number; // unassigned & non-invalid of this type
+  resultCombo: string; // e.g. "Chatbot + Ticketbot"
 }
 
-/** Back-to-back pairing row: A email | B email | shared quantity. */
-interface PairRow {
-  aName: string;
-  bName: string;
-  quantity: string;
-}
+// ---- QA name search input ---------------------------------------------------
 
-function emptyPairRows(n: number): PairRow[] {
-  return Array.from({ length: n }, () => ({ aName: "", bName: "", quantity: "" }));
-}
-
-function emptyRows(n: number): Row[] {
-  return Array.from({ length: n }, () => ({ name: "", quantity: "" }));
-}
-
-/** QA name input with keyword matching against the test accounts. */
 function QaNameInput({
   value,
   onChange,
+  placeholder = "Enter QA name / email",
 }: {
   value: string;
   onChange: (v: string) => void;
+  placeholder?: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const suggestions = useMemo(() => {
-    const q = value.trim().toLowerCase();
-    return USER_OPTIONS.filter((u) => {
-      if (!q) return true;
-      return (
-        u.email.toLowerCase().includes(q) ||
-        u.label.toLowerCase().includes(q) ||
-        u.shortName.toLowerCase().includes(q)
-      );
-    });
-  }, [value]);
-
+  const [focus, setFocus] = useState(false);
+  const q = value.trim().toLowerCase();
+  const matches = q
+    ? USER_OPTIONS.filter(
+        (u) =>
+          u.email.toLowerCase().includes(q) ||
+          u.label.toLowerCase().includes(q) ||
+          u.shortName.toLowerCase().includes(q),
+      )
+    : USER_OPTIONS;
   return (
     <div className="relative">
       <input
         value={value}
-        placeholder="Enter QA name"
-        onChange={(e) => {
-          onChange(e.target.value);
-          setOpen(true);
-        }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => {
-          blurTimer.current = setTimeout(() => setOpen(false), 120);
-        }}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setFocus(true)}
+        onBlur={() => setTimeout(() => setFocus(false), 150)}
+        placeholder={placeholder}
         className="h-10 w-full rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
       />
-      {open && suggestions.length > 0 && (
-        <div className="absolute left-0 right-0 top-11 z-10 overflow-hidden rounded-lg border border-line bg-white shadow-lg">
-          {suggestions.map((u) => (
+      {focus && matches.length > 0 && (
+        <div className="absolute z-30 mt-1 max-h-52 w-full overflow-y-auto rounded-lg border border-line bg-white shadow-lg">
+          {matches.map((u) => (
             <button
               key={u.email}
               type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                if (blurTimer.current) clearTimeout(blurTimer.current);
-                onChange(u.email);
-                setOpen(false);
-              }}
-              className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-page"
+              onMouseDown={() => onChange(u.email)}
+              className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-page"
             >
-              <span className="font-medium text-ink">{u.label}</span>
-              <span className="text-xs text-subtle">{u.email}</span>
+              <span className="text-sm font-medium text-ink">{u.shortName}</span>
+              <span className="text-xs text-muted">{u.email}</span>
             </button>
           ))}
         </div>
@@ -86,448 +63,297 @@ function QaNameInput({
   );
 }
 
-function DistributionTable({
-  title,
-  rows,
-  setRows,
-  remaining,
-}: {
-  title: string;
-  rows: Row[];
-  setRows: (rows: Row[]) => void;
-  remaining: number;
-}) {
-  const update = (i: number, patch: Partial<Row>) =>
-    setRows(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-ink">{title}</span>
-        <span className={`text-xs ${remaining < 0 ? "text-danger" : "text-subtle"}`}>
-          Remaining unassigned: <span className="font-semibold">{remaining} cases</span>
-        </span>
-      </div>
-
-      <div className="grid grid-cols-[1fr_120px] gap-x-3 gap-y-2">
-        <span className="text-xs font-medium text-subtle">QA Name</span>
-        <span className="text-xs font-medium text-subtle">Quantity</span>
-        {rows.map((row, i) => (
-          <FragmentRow key={i}>
-            <QaNameInput value={row.name} onChange={(v) => update(i, { name: v })} />
-            <input
-              type="number"
-              min={0}
-              value={row.quantity}
-              placeholder="Number"
-              onChange={(e) => update(i, { quantity: e.target.value })}
-              className="h-10 w-full rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
-            />
-          </FragmentRow>
-        ))}
-      </div>
-
-      <button
-        type="button"
-        onClick={() => setRows([...rows, { name: "", quantity: "" }])}
-        className="w-full rounded-lg border border-line py-2 text-sm font-medium text-brand hover:bg-page"
-      >
-        Add more
-      </button>
-    </div>
-  );
-}
-
-/**
- * Back-to-back pairing table: each row is A | B | Quantity. The row's quantity
- * cases go to BOTH that row's A (top slot) and B (bottom dropdown) on each case.
- */
-function PairTable({
-  rows,
-  setRows,
-  remaining,
-}: {
-  rows: PairRow[];
-  setRows: (rows: PairRow[]) => void;
-  remaining: number;
-}) {
-  const update = (i: number, patch: Partial<PairRow>) =>
-    setRows(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-ink">Back-to-Back Pairs（A ｜ B ｜ 数量）</span>
-        <span className={`text-xs ${remaining < 0 ? "text-danger" : "text-subtle"}`}>
-          Remaining unassigned: <span className="font-semibold">{remaining} cases</span>
-        </span>
-      </div>
-
-      <div className="grid grid-cols-[1fr_1fr_96px] gap-x-3 gap-y-2">
-        <span className="text-xs font-medium text-subtle">A Annotator</span>
-        <span className="text-xs font-medium text-subtle">B Annotator</span>
-        <span className="text-xs font-medium text-subtle">Quantity</span>
-        {rows.map((row, i) => (
-          <FragmentRow key={i}>
-            <QaNameInput value={row.aName} onChange={(v) => update(i, { aName: v })} />
-            <QaNameInput value={row.bName} onChange={(v) => update(i, { bName: v })} />
-            <input
-              type="number"
-              min={0}
-              value={row.quantity}
-              placeholder="Qty"
-              onChange={(e) => update(i, { quantity: e.target.value })}
-              className="h-10 w-full rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
-            />
-          </FragmentRow>
-        ))}
-      </div>
-
-      <button
-        type="button"
-        onClick={() => setRows([...rows, { aName: "", bName: "", quantity: "" }])}
-        className="w-full rounded-lg border border-line py-2 text-sm font-medium text-brand hover:bg-page"
-      >
-        Add more
-      </button>
-    </div>
-  );
-}
-
-function FragmentRow({ children }: { children: React.ReactNode }) {
-  return <>{children}</>;
-}
-
-function toAllocations(rows: Row[]): QaAllocation[] {
-  return rows
-    .filter((r) => r.name.trim() && Number(r.quantity) > 0)
-    .map((r) => ({ name: r.name.trim(), quantity: Number(r.quantity) }));
-}
-
-function sumQty(rows: Row[]): number {
-  return rows.reduce((acc, r) => acc + (Number(r.quantity) || 0), 0);
-}
-
-/**
- * Single-case QA assignment (Detail page). Unlike the case-set distribution,
- * one case is assigned to exactly one QA — no quantity input.
- */
-export function SingleAssignModal({
-  session,
-  title = "Assign QA Owner",
-  initialName,
-  excludeEmail,
-  onClose,
-  onConfirm,
-}: {
-  session: SessionRow;
-  /** Modal heading (e.g. "Assign B Reviewer"). */
-  title?: string;
-  /** Pre-filled QA name. */
-  initialName?: string;
-  /** A person that cannot be picked (anti-self-review for B). */
-  excludeEmail?: string;
-  onClose: () => void;
-  onConfirm: (qaName: string) => void;
-}) {
-  const [name, setName] = useState(initialName ?? session.qaOwner ?? "");
-
-  const existingQas = useMemo(() => {
-    const set = new Set<string>();
-    USER_OPTIONS.forEach((u) => set.add(u.email));
-    if (session.qaOwner) set.add(session.qaOwner);
-    if (session.annotator) set.add(session.annotator);
-    if (excludeEmail) set.delete(excludeEmail);
-    return Array.from(set);
-  }, [session.qaOwner, session.annotator, excludeEmail]);
-
-  const isExcluded = !!excludeEmail && name.trim() === excludeEmail;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
-      <div className="w-full max-w-md rounded-xl border border-line bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between border-b border-line px-5 py-4">
-          <div className="flex items-center gap-2">
-            <Users className="h-5 w-5 text-brand" />
-            <h3 className="text-base font-semibold">{title}</h3>
-          </div>
-          <button onClick={onClose} className="text-subtle hover:text-ink">
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="space-y-4 px-5 py-4">
-          <p className="font-mono text-xs text-subtle">{session.sessionId}</p>
-          {excludeEmail && (
-            <p className="rounded-md bg-page px-3 py-2 text-xs text-subtle">
-              不能指派成 A（<span className="font-medium text-ink">{USER_OPTIONS.find((u) => u.email === excludeEmail)?.shortName ?? excludeEmail}</span>），其他人都可以。
-            </p>
-          )}
-
-          <div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-subtle">Existing QAs</p>
-            <div className="flex flex-wrap gap-2">
-              {existingQas.map((qa) => {
-                const opt = USER_OPTIONS.find((u) => u.email === qa);
-                const label = opt?.shortName ?? qa;
-                const on = name === qa;
-                return (
-                  <button
-                    key={qa}
-                    type="button"
-                    onClick={() => setName(qa)}
-                    className={`rounded-md border px-3 py-1 text-sm transition-colors ${
-                      on ? "border-brand bg-brand-light text-brand" : "border-line text-subtle hover:border-brand/40 hover:text-ink"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div>
-            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-subtle">QA Name</p>
-            <p className="mb-2 text-xs text-subtle">Select from existing QAs above, or type a new name to create one.</p>
-            <QaNameInput value={name} onChange={setName} />
-            {isExcluded && (
-              <p className="mt-1 text-xs text-danger">不能选 A 本人，请换一个人。</p>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-4">
-          <button onClick={onClose} className="rounded-md px-4 py-2 text-sm font-medium text-brand hover:bg-page">
-            Cancel
-          </button>
-          <button
-            onClick={() => {
-              onConfirm(name.trim());
-              onClose();
-            }}
-            disabled={!name.trim() || isExcluded}
-            className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Confirm
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function AssignModal({
-  session,
-  remainingCases = 1,
+  taskName,
+  types,
   lockedMode,
   onClose,
   onConfirm,
 }: {
-  session: SessionRow | null;
-  remainingCases?: number;
-  /** If the task already has a mode, lock the Back-to-Back toggle to it. */
-  lockedMode?: boolean;
+  taskName: string;
+  /** per-Type availability list (only Types present in the set) */
+  types: TypeAvailability[];
+  /** locked task mode; undefined = first assignment (选择并锁定) */
+  lockedMode?: "Normal" | "Back-to-Back";
   onClose: () => void;
-  onConfirm: (config: AssignConfig, isReassign: boolean) => void;
+  onConfirm: (config: DistributeConfig) => void;
 }) {
-  const hasOwner = !!session?.qaOwner;
-  const isReassign = hasOwner;
-  const actionLabel = hasOwner ? "Reassign" : "Distribute";
+  const [mode, setMode] = useState<"Normal" | "Back-to-Back">(lockedMode ?? "Normal");
+  const [selectedTypes, setSelectedTypes] = useState<Set<CaseType>>(new Set());
+  const [normalRows, setNormalRows] = useState<QaAllocation[]>([{ name: "", quantity: 0 }]);
+  const [pairRows, setPairRows] = useState<QaPair[]>([{ aName: "", bName: "", quantity: 0 }]);
+  const [confirmLock, setConfirmLock] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const [backToBack, setBackToBack] = useState<boolean>(lockedMode ?? false);
-  // 第一版只支持盲检（独立双盲）。明检已下线，不再提供选项。
-  const bMode = "blind" as const;
-  // First-time distribution locks the task into a mode (Normal / Back-to-Back)
-  // for good. Ask for a second confirmation before that happens.
-  const [confirming, setConfirming] = useState(false);
+  // Effective Types for this round: selected, or All when none selected.
+  const effectiveTypes = selectedTypes.size > 0 ? types.filter((t) => selectedTypes.has(t.caseType)) : types;
+  const totalRemaining = effectiveTypes.reduce((sum, t) => sum + t.remaining, 0);
 
-  const [aRows, setARows] = useState<Row[]>(() =>
-    session?.annotator ? [{ name: session.annotator, quantity: "1" }, ...emptyRows(2)] : emptyRows(3),
-  );
-  const [pairRows, setPairRows] = useState<PairRow[]>(() => emptyPairRows(3));
+  const requested = mode === "Normal"
+    ? normalRows.reduce((s, r) => s + (r.quantity || 0), 0)
+    : pairRows.reduce((s, r) => s + (r.quantity || 0), 0);
 
-  // Quantity used = A's quantity. For back-to-back, A and B are locked to the
-  // same count per row, so "remaining" only needs to follow A (== the pair qty).
-  const usedQty = backToBack
-    ? pairRows.reduce((acc, r) => acc + (Number(r.quantity) || 0), 0)
-    : sumQty(aRows);
-  const remaining = remainingCases - usedQty;
-  const aAllocations = toAllocations(aRows);
+  const toggleType = (t: CaseType) => {
+    setSelectedTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
+      return next;
+    });
+  };
 
-  const pairAllocations: QaPair[] = pairRows
-    .filter((r) => r.aName.trim() && r.bName.trim() && Number(r.quantity) > 0)
-    .map((r) => ({ aName: r.aName.trim(), bName: r.bName.trim(), quantity: Number(r.quantity) }));
+  const buildConfig = (): DistributeConfig => ({
+    mode,
+    types: Array.from(selectedTypes),
+    aDistribution: mode === "Normal" ? normalRows.filter((r) => r.name.trim() && r.quantity > 0) : undefined,
+    pairDistribution: mode === "Back-to-Back" ? pairRows.filter((r) => r.quantity > 0) : undefined,
+  });
 
-  // Back-to-back A and B must be different people on the same row (a person
-  // can't double-blind review their own annotation). Compare normalized.
-  const sameABError = backToBack
-    ? pairRows.some((r) => {
-        const a = r.aName.trim().toLowerCase();
-        const b = r.bName.trim().toLowerCase();
-        return a && b && a === b;
-      })
-    : false;
-  const noRemaining = remainingCases <= 0;
+  const validate = (): string | null => {
+    if (requested === 0) return "请填写要分配的 QA 与数量。";
+    if (requested > totalRemaining)
+      return `本轮所选范围最多可分配 ${totalRemaining} 条，当前填写了 ${requested} 条。`;
+    if (mode === "Normal" && normalRows.filter((r) => r.name.trim() && r.quantity > 0).length === 0)
+      return "请至少填写一行 QA 与数量。";
+    if (mode === "Back-to-Back") {
+      const rows = pairRows.filter((r) => r.quantity > 0);
+      if (rows.some((r) => !r.aName.trim() || !r.bName.trim())) return "Back-to-Back 每一行都必须同时填写 A 和 B。";
+    }
+    return null;
+  };
 
-  const over = usedQty > remainingCases;
-  const overError = noRemaining
-    ? "没有可分配的 case（都已分配）。"
-    : over
-      ? `分配 ${usedQty} 个，超过了可分配的 ${remainingCases} 个 case`
-      : sameABError
-        ? "同一行的 A、B 不能是同一个人（不能自己评自己）。"
-        : null;
+  const submit = () => {
+    const err = validate();
+    if (err) {
+      setError(err);
+      return;
+    }
+    onConfirm(buildConfig());
+  };
 
-  const canConfirm = over || sameABError || noRemaining
-    ? false
-    : backToBack
-      ? pairAllocations.length > 0
-      : aAllocations.length > 0;
-
-  // Only the first distribution locks the mode; Reassign keeps the existing one.
-  const needsModeLockConfirm = lockedMode === undefined;
-
-  const doConfirm = () => {
-    onConfirm(
-      {
-        aEmail: backToBack ? pairAllocations[0]?.aName ?? "" : aAllocations[0]?.name ?? "",
-        bEmail: backToBack ? pairAllocations[0]?.bName : undefined,
-        backToBackEnabled: backToBack,
-        bMode: backToBack ? bMode : undefined,
-        aDistribution: backToBack ? undefined : aAllocations,
-        pairDistribution: backToBack ? pairAllocations : undefined,
-      },
-      isReassign,
-    );
-    onClose();
+  const tryConfirm = () => {
+    const err = validate();
+    if (err) {
+      setError(err);
+      return;
+    }
+    if (!lockedMode) {
+      setConfirmLock(true); // first assignment: confirm mode lock
+      return;
+    }
+    submit();
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-      <div className={`flex max-h-[90vh] w-full flex-col rounded-xl border border-line bg-white shadow-xl ${backToBack ? "max-w-2xl" : "max-w-lg"}`}>
-        <div className="flex items-center justify-between border-b border-line px-5 py-4">
+      <div className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-xl border border-line bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-line px-6 py-4">
           <div className="flex items-center gap-2">
             <Users className="h-5 w-5 text-brand" />
-            <h3 className="text-base font-semibold">Distribute cases to QAs</h3>
+            <h3 className="text-lg font-semibold text-ink">Batch Assign · {taskName}</h3>
           </div>
           <button onClick={onClose} className="text-subtle hover:text-ink">
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
-          <div className="flex items-center justify-between rounded-lg bg-page px-3 py-2 text-sm">
-            <span className="text-subtle">Assignment Type</span>
-            <span className="font-medium text-brand">{actionLabel}</span>
+        <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+          {/* Mode selection / lock */}
+          <div className="rounded-lg border border-line p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold text-ink">评分模式</span>
+              {lockedMode && (
+                <span className="rounded-md bg-brand-light px-2 py-0.5 text-xs font-medium text-brand">
+                  已锁定：{lockedMode}
+                </span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              {(["Normal", "Back-to-Back"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  disabled={!!lockedMode}
+                  onClick={() => setMode(m)}
+                  className={`rounded-md border px-4 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                    mode === m ? "border-brand bg-brand text-white" : "border-line text-brand hover:bg-page"
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-subtle">
+              {mode === "Back-to-Back"
+                ? "双人同评一条 case（盲检）：A、B 独立标注，一致进池，不一致进待拉齐。"
+                : "单人评：A 评完即定稿进 QC 抽样池。"}
+              {!lockedMode && " 首次分配将锁定该模式，之后不可切换。"}
+            </p>
           </div>
 
-          {/* Back-to-Back toggle (the "lock"): OFF = single annotator per case;
-              ON = an A and a B reviewer are both assigned to the same case. */}
-          <label
-            className={`flex items-start gap-3 rounded-lg border px-4 py-3 ${
-              backToBack ? "border-brand bg-brand-light" : "border-line bg-white"
-            } ${lockedMode !== undefined ? "opacity-90" : "cursor-pointer"}`}
-          >
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={backToBack}
-              disabled={lockedMode !== undefined}
-              onChange={(e) => setBackToBack(e.target.checked)}
-            />
-            <span>
-              <span className="text-sm font-medium text-ink">Back-to-Back（双人同评一条 case）</span>
-              <span className="mt-0.5 block text-xs text-subtle">
-                {lockedMode !== undefined
-                  ? `该 task 已锁定为「${lockedMode ? "Back-to-Back" : "Normal"}」模式，不可更改。`
-                  : "勾选后每行的 A、B 会同评同一批 case（数量共用一栏）；不勾则一人一条 case。"}
+          {/* Type selection */}
+          <div className="rounded-lg border border-line p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold text-ink">Case Type（不勾选 = All）</span>
+              <span className="text-xs text-subtle">
+                Total remaining: <span className="font-mono font-semibold text-ink">{totalRemaining}</span>
               </span>
-            </span>
-          </label>
+            </div>
+            <div className="space-y-1.5">
+              {types.map((t) => {
+                const checked = selectedTypes.has(t.caseType);
+                const disabled = t.remaining === 0;
+                return (
+                  <label
+                    key={t.caseType}
+                    className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${
+                      disabled ? "border-line bg-page opacity-60" : checked ? "border-brand bg-brand-light" : "border-line"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        disabled={disabled}
+                        checked={checked}
+                        onChange={() => toggleType(t.caseType)}
+                      />
+                      <span className="font-medium text-ink">Type {t.caseType}</span>
+                      <span className="text-xs text-subtle">
+                        {ANNOTATION_CATEGORY_BY_TYPE[t.caseType]} · {t.resultCombo}
+                      </span>
+                    </span>
+                    <span className="font-mono text-xs text-subtle">
+                      total {t.total} · remaining {t.remaining}
+                    </span>
+                  </label>
+                );
+              })}
+              {types.length === 0 && <p className="text-sm text-subtle">该 case set 暂无可分配 Type。</p>}
+            </div>
+          </div>
 
-          {backToBack ? (
-            <div className="rounded-lg border border-line bg-white p-4">
-              <PairTable rows={pairRows} setRows={setPairRows} remaining={remaining} />
+          {/* Distribution */}
+          {mode === "Normal" ? (
+            <div className="rounded-lg border border-line p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-sm font-semibold text-ink">Annotators</span>
+                <span className="text-xs text-subtle">
+                  Remaining unassigned: <span className="font-mono font-semibold text-ink">{Math.max(0, totalRemaining - requested)}</span>
+                </span>
+              </div>
+              <div className="mb-2 flex gap-3 text-xs font-medium uppercase tracking-wide text-subtle">
+                <span className="flex-1">QA Name</span>
+                <span className="w-28">Quantity</span>
+              </div>
+              {normalRows.map((row, i) => (
+                <div key={i} className="mb-2 flex items-start gap-3">
+                  <div className="flex-1">
+                    <QaNameInput value={row.name} onChange={(v) => setNormalRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, name: v } : r)))} />
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    value={row.quantity || ""}
+                    placeholder="Number"
+                    onChange={(e) =>
+                      setNormalRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, quantity: Math.max(0, Number(e.target.value) || 0) } : r)))
+                    }
+                    className="h-10 w-28 rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
+                  />
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setNormalRows((rs) => [...rs, { name: "", quantity: 0 }])}
+                className="mt-1 inline-flex items-center gap-1 text-sm text-brand hover:underline"
+              >
+                <Plus className="h-3.5 w-3.5" /> Add more
+              </button>
             </div>
           ) : (
-            <div className="rounded-lg border border-line bg-white p-4">
-              <DistributionTable
-                title="Annotators"
-                rows={aRows}
-                setRows={setARows}
-                remaining={remaining}
-              />
+            <div className="rounded-lg border border-line p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <span className="text-sm font-semibold text-ink">A ｜ B ｜ Quantity</span>
+                <span className="text-xs text-subtle">
+                  Remaining unassigned: <span className="font-mono font-semibold text-ink">{Math.max(0, totalRemaining - requested)}</span>
+                </span>
+              </div>
+              <div className="mb-2 flex gap-3 text-xs font-medium uppercase tracking-wide text-subtle">
+                <span className="flex-1">A Annotator</span>
+                <span className="flex-1">B Annotator</span>
+                <span className="w-24">Quantity</span>
+              </div>
+              {pairRows.map((row, i) => (
+                <div key={i} className="mb-2 flex items-start gap-3">
+                  <div className="flex-1">
+                    <QaNameInput value={row.aName} placeholder="A name / email" onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, aName: v } : r)))} />
+                  </div>
+                  <div className="flex-1">
+                    <QaNameInput value={row.bName} placeholder="B name / email" onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, bName: v } : r)))} />
+                  </div>
+                  <input
+                    type="number"
+                    min={0}
+                    value={row.quantity || ""}
+                    placeholder="Number"
+                    onChange={(e) =>
+                      setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, quantity: Math.max(0, Number(e.target.value) || 0) } : r)))
+                    }
+                    className="h-10 w-24 rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
+                  />
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setPairRows((rs) => [...rs, { aName: "", bName: "", quantity: 0 }])}
+                className="mt-1 inline-flex items-center gap-1 text-sm text-brand hover:underline"
+              >
+                <Plus className="h-3.5 w-3.5" /> Add more
+              </button>
             </div>
           )}
 
-          <p className="text-xs text-subtle">
-            {backToBack
-              ? "每行「A ｜ B ｜ 数量」：该行 case 同时分给 A、B 做盲检。两人一致自动进池；不一致标「待拉齐」，由 QA 在 Detail 里快速拉齐后进池。之后 QC 按比例抽样。"
-              : "分配 Annotators。评完后进入 QC 可抽样。"}
-          </p>
+          {error && (
+            <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-light px-3 py-2 text-sm text-danger">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
         </div>
 
-        {overError && (
-          <div className="mx-5 mb-1 rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-            {overError}
-          </div>
-        )}
-
-        <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-4">
-          <button
-            onClick={onClose}
-            className="rounded-md border border-line px-4 py-2 text-sm font-medium text-subtle hover:bg-gray-50"
-          >
+        <div className="flex items-center justify-end gap-2 border-t border-line px-6 py-4">
+          <button onClick={onClose} className="rounded-md px-4 py-2 text-sm font-medium text-brand hover:bg-page">
             Cancel
           </button>
           <button
-            onClick={() => {
-              if (needsModeLockConfirm) {
-                setConfirming(true);
-              } else {
-                doConfirm();
-              }
-            }}
-            disabled={!canConfirm}
-            className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={tryConfirm}
+            className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90"
           >
-            Confirm {actionLabel}
+            Confirm Distribute
           </button>
         </div>
       </div>
 
-      {confirming && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
-          onClick={() => setConfirming(false)}
-        >
-          <div
-            className="w-full max-w-sm rounded-xl border border-line bg-white shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-5 py-4">
-              <h3 className="text-base font-semibold text-ink">确认锁定标注模式？</h3>
-              <p className="mt-2 text-sm text-subtle">
-                该 task 将锁定为
-                <span className="font-semibold text-ink">
-                  {backToBack ? "「Back-to-Back（双人同评）」" : "「Normal（单人评）」"}
-                </span>
-                模式。一旦确认，模式将无法更改，后续 Batch Assign 只能按此模式追加分配。
-              </p>
-            </div>
-            <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-4">
-              <button
-                onClick={() => setConfirming(false)}
-                className="rounded-md border border-line px-4 py-2 text-sm font-medium text-subtle hover:bg-gray-50"
-              >
-                返回修改
+      {/* Mode-lock confirmation (first assignment only) */}
+      {confirmLock && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-xl border border-line bg-white p-5 shadow-xl">
+            <h4 className="text-base font-semibold text-ink">确认锁定标注模式？</h4>
+            <p className="mt-2 text-sm text-subtle">
+              首次分配将把该 task 锁定为「<span className="font-medium text-ink">{mode}</span>」模式，之后 Batch Assign 与 Detail Assign QA 均沿用该模式，不可切换。
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setConfirmLock(false)} className="rounded-md border border-line px-4 py-2 text-sm text-subtle hover:bg-page">
+                Cancel
               </button>
               <button
-                onClick={doConfirm}
-                className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                onClick={() => {
+                  setConfirmLock(false);
+                  submit();
+                }}
+                className="rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
               >
-                确认锁定
+                确认锁定并分配
               </button>
             </div>
           </div>

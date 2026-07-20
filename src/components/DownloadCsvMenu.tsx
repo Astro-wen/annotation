@@ -1,10 +1,56 @@
 import { useState } from "react";
 import { Download, FileText, FileBarChart } from "lucide-react";
 import { Button } from "./ui";
-import { downloadCsv } from "@/lib/csv";
-import { summary } from "@/mock/summary";
-import { useSessionStore } from "@/store/sessionStore";
+import {
+  downloadCsv,
+  dimConsistency,
+  formatRate,
+  SQS_DIM_KEYS,
+  UEF_DIM_KEY,
+} from "@/lib/csv";
+import {
+  useSessionStore,
+  effectiveRound,
+  caseStatus,
+  RESULT_TYPES,
+  type CaseFlow,
+  type RoundResult,
+} from "@/store/sessionStore";
 import { useRubricStore } from "@/store/rubricStore";
+import { qcAccuracy, formatAccuracy, type AccuracyPair } from "@/lib/scoring";
+import { assertNoPII } from "@/lib/pii";
+import type { CaseRow, ResultType } from "@/mock/types";
+
+type CaseWithFlow = { row: CaseRow; flow?: CaseFlow };
+
+/** Baseline used for QC comparison (sampled snapshot preferred). */
+function qcBaseline(flow: CaseFlow): RoundResult | undefined {
+  return flow.sampledBaseline ?? flow.finalizedBaseline;
+}
+
+/** QC accuracy pairs for one result_type over QC-completed, non-invalid cases. */
+function qcPairsForType(rows: CaseWithFlow[], rt: ResultType): AccuracyPair[] {
+  const pairs: AccuracyPair[] = [];
+  for (const { row, flow } of rows) {
+    if (row.invalid || !flow || !flow.qcCompleted) continue;
+    const baseline = qcBaseline(flow);
+    const current = flow.currentResult;
+    if (!baseline || !current) continue;
+    for (const er of row.expectedResults) {
+      if (er.resultType !== rt) continue;
+      const b = baseline.results[er.resultId];
+      const c = current.results[er.resultId];
+      if (!b || !c) continue;
+      pairs.push({ baseline: b.scores, current: c.scores });
+    }
+  }
+  return pairs;
+}
+
+function mean(nums: number[]): string {
+  if (nums.length === 0) return "";
+  return (nums.reduce((a, b) => a + b, 0) / nums.length).toFixed(2);
+}
 
 export default function DownloadCsvMenu({
   taskId,
@@ -14,78 +60,201 @@ export default function DownloadCsvMenu({
   label?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const sessions = useSessionStore((s) => s.sessions);
-  const imported = useSessionStore((s) => s.imported);
-  const rubric = useRubricStore((s) => s.rubric);
+  const [includeHistory, setIncludeHistory] = useState(false);
+  const cases = useSessionStore((s) => s.cases);
+  const flows = useSessionStore((s) => s.flows);
+  const version = useRubricStore((s) => s.version);
+
+  const configVersion = `v${version}`;
+
+  const scoped: CaseWithFlow[] = cases
+    .filter((row) => !taskId || row.taskId === taskId)
+    .map((row) => ({ row, flow: flows.find((f) => f.caseId === row.caseId) }));
 
   const downloadSummary = () => {
-    downloadCsv(
-      "annotation_summary.csv",
-      [
-        "Annotated Cases",
-        "Total Cases",
-        "SQS Avg",
-        "UES Avg",
-        "User Satisfaction Avg",
-        "SQS Pass Rate",
-        "QC Accuracy",
-        "UES Pass Rate",
-      ],
-      [
-        [
-          String(summary.annotatedCases),
-          String(summary.totalCases),
-          summary.sqsAvg,
-          summary.uesAvg,
-          summary.userSatisfactionAvg,
-          summary.sqsPassRate,
-          summary.qcAccuracy,
-          summary.uesPassRate,
-        ],
-      ],
-    );
+    const headers = [
+      "result_type",
+      "total_samples",
+      "invalid_count",
+      "annotated_count",
+      "annotated_rate",
+      "sqs_avg",
+      "uef_avg",
+      "uxs_avg",
+      "understanding_accuracy_consistency",
+      "execution_correctness_consistency",
+      "solution_adoption_consistency",
+      "responsiveness_consistency",
+      "service_efficiency_consistency",
+      "language_quality_consistency",
+      "uef_accuracy",
+      "qc_accuracy",
+      "config_version",
+    ];
+
+    const rows: string[][] = [];
+    for (const rt of RESULT_TYPES) {
+      let total = 0;
+      let invalid = 0;
+      const sqs: number[] = [];
+      const uef: number[] = [];
+      const uxs: number[] = [];
+      let annotated = 0;
+
+      for (const { row, flow } of scoped) {
+        const eff = row.invalid ? undefined : effectiveRound(flow);
+        for (const er of row.expectedResults) {
+          if (er.resultType !== rt) continue;
+          total += 1;
+          if (row.invalid) {
+            invalid += 1;
+            continue;
+          }
+          const s = eff?.results[er.resultId];
+          if (s) {
+            annotated += 1;
+            sqs.push(s.sqsAvg);
+            uef.push(s.uefTotal);
+            uxs.push(s.uxs);
+          }
+        }
+      }
+
+      if (total === 0) continue; // only emit result_types that have data
+
+      const denom = total - invalid;
+      const annotatedRate = denom > 0 ? formatRate(annotated / denom) : "";
+
+      const pairs = qcPairsForType(scoped, rt);
+      const consistencyCols = SQS_DIM_KEYS.map((k) => formatRate(dimConsistency(pairs, k)));
+      const uefAccuracy = formatRate(dimConsistency(pairs, UEF_DIM_KEY));
+      const qcAcc = formatAccuracy(qcAccuracy(pairs));
+
+      rows.push([
+        rt,
+        String(total),
+        String(invalid),
+        String(annotated),
+        annotatedRate,
+        mean(sqs),
+        mean(uef),
+        mean(uxs),
+        ...consistencyCols,
+        uefAccuracy,
+        qcAcc === "—" ? "" : qcAcc,
+        configVersion,
+      ]);
+    }
+
+    downloadCsv("annotation_summary.csv", headers, rows);
     setOpen(false);
   };
 
   const downloadData = () => {
-    const dims = rubric; // all dimensions (enabled or not) as columns for completeness
-    const header = [
-      "session_id",
-      "language",
-      "region",
-      "service_subtype",
-      "knowledge_source",
-      ...dims.map((d) => d.key),
-      "sqs_total",
-      "sqs_pass",
-      "ues_total",
-      "ues_pass",
-      "user_satisfaction",
-      "human_sqs_total",
-      "human_ues_total",
-      "human_user_satisfaction",
-      "status",
+    const scoreKeys = [...SQS_DIM_KEYS, UEF_DIM_KEY];
+
+    const baseHeaders = [
+      "type_number",
+      "annotation_category",
+      "category",
+      "merge_id",
+      "case_id",
+      "result_id",
+      "result_type",
+      "service_subtypes",
+      "entry_mode",
+      "covered_source_ids",
+      "case_status",
+      "final_source",
+      ...scoreKeys,
+      "uxs",
+      "annotator",
     ];
-    const rows = sessions
-      .filter((s) => imported || !taskId || s.taskId === taskId)
-      .map((s) => [
-        s.sessionId,
-        s.language,
-        s.regionCode,
-        s.serviceSubtype,
-        s.knowledgeSource,
-        ...dims.map((d) => (s.bot?.scores?.[d.key] !== undefined ? String(s.bot!.scores[d.key]) : "")),
-        s.bot?.sqsTotal?.toFixed(2) ?? "",
-        s.bot ? (s.bot.sqsPass ? "Pass" : "No Pass") : "",
-        s.bot?.uesTotal?.toFixed(2) ?? "",
-        s.bot ? (s.bot.uesPass ? "Pass" : "Fail") : "",
-        s.bot?.userSatisfaction?.toFixed(2) ?? "",
-        s.human?.sqsTotal?.toFixed(2) ?? "",
-        s.human?.uesTotal?.toFixed(2) ?? "",
-        s.human?.userSatisfaction?.toFixed(2) ?? "",
-        s.status,
-      ]);
-    downloadCsv("annotation_data.csv", header, rows);
+
+    const historyHeaders = [
+      ...baseHeaders,
+      "round",
+      "role",
+      "is_final",
+      "round_submitted_at",
+      "config_version",
+    ];
+
+    const rows: string[][] = [];
+
+    for (const { row, flow } of scoped) {
+      const status = caseStatus(row, flow);
+      const finalSource = flow?.finalSource ?? "";
+      const annotator = flow?.aResult?.by ?? flow?.aAssignee ?? "";
+
+      for (const er of row.expectedResults) {
+        const baseCells = [
+          String(row.caseType),
+          assertNoPII(row.annotationCategory),
+          assertNoPII(row.category),
+          assertNoPII(row.mergeId),
+          assertNoPII(row.caseId),
+          assertNoPII(er.resultId),
+          er.resultType,
+          assertNoPII(er.serviceSubtypes.join("|")),
+          er.entryMode,
+          assertNoPII(er.coveredSourceIds.join("|")),
+          assertNoPII(status),
+          assertNoPII(finalSource),
+        ];
+
+        if (!includeHistory) {
+          const eff = row.invalid ? undefined : effectiveRound(flow);
+          const s = eff?.results[er.resultId];
+          const scoreCells = scoreKeys.map((k) =>
+            s ? String(s.scores[k] ?? "") : "",
+          );
+          rows.push([
+            ...baseCells,
+            ...scoreCells,
+            s ? s.uxs.toFixed(2) : "",
+            assertNoPII(annotator),
+          ]);
+          continue;
+        }
+
+        // History mode: one row per (result × round).
+        const eff = effectiveRound(flow);
+        const rounds: {
+          round: RoundResult | undefined;
+          role: string;
+        }[] = [
+          { round: flow?.aFirstResult, role: "A" },
+          { round: flow?.bFirstResult, role: "B" },
+          { round: flow?.finalizedBaseline, role: "baseline" },
+          { round: flow?.currentResult, role: "current" },
+        ];
+
+        rounds.forEach(({ round, role }, idx) => {
+          if (!round) return;
+          const s = round.results[er.resultId];
+          const scoreCells = scoreKeys.map((k) => (s ? String(s.scores[k] ?? "") : ""));
+          const isFinal = role === "current" && round === eff;
+          rows.push([
+            ...baseCells,
+            ...scoreCells,
+            s ? s.uxs.toFixed(2) : "",
+            assertNoPII(round.by ?? ""),
+            String(idx + 1),
+            role,
+            isFinal ? "true" : "false",
+            assertNoPII(round.at ?? ""),
+            configVersion,
+          ]);
+        });
+      }
+    }
+
+    downloadCsv(
+      "annotation_data.csv",
+      includeHistory ? historyHeaders : baseHeaders,
+      rows,
+    );
     setOpen(false);
   };
 
@@ -97,7 +266,7 @@ export default function DownloadCsvMenu({
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 z-20 mt-1 w-64 rounded-lg border border-line bg-white p-1 shadow-lg">
+          <div className="absolute right-0 z-20 mt-1 w-72 rounded-lg border border-line bg-white p-1 shadow-lg">
             <button
               onClick={downloadSummary}
               className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left hover:bg-gray-50"
@@ -106,10 +275,39 @@ export default function DownloadCsvMenu({
               <span>
                 <span className="block text-sm font-medium">annotation_summary.csv</span>
                 <span className="block text-xs text-subtle">
-                  Aggregate metrics: SQS / UES Avg, User Satisfaction, Pass Rate, QC Accuracy
+                  Aggregate per result_type: SQS / UEF / UXS avg, consistency, QC accuracy
                 </span>
               </span>
             </button>
+
+            <div className="my-1 border-t border-line" />
+
+            <div className="px-3 py-1.5">
+              <span className="block text-xs font-medium uppercase tracking-wide text-subtle">
+                明细结果范围
+              </span>
+              <div className="mt-1 flex rounded-md border border-line p-0.5 text-xs">
+                <button
+                  onClick={() => setIncludeHistory(false)}
+                  className={
+                    "flex-1 rounded px-2 py-1 font-medium transition-colors " +
+                    (!includeHistory ? "bg-brand text-white" : "text-ink hover:bg-gray-50")
+                  }
+                >
+                  仅最新结果
+                </button>
+                <button
+                  onClick={() => setIncludeHistory(true)}
+                  className={
+                    "flex-1 rounded px-2 py-1 font-medium transition-colors " +
+                    (includeHistory ? "bg-brand text-white" : "text-ink hover:bg-gray-50")
+                  }
+                >
+                  包含历史结果
+                </button>
+              </div>
+            </div>
+
             <button
               onClick={downloadData}
               className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left hover:bg-gray-50"
@@ -118,7 +316,8 @@ export default function DownloadCsvMenu({
               <span>
                 <span className="block text-sm font-medium">annotation_data.csv</span>
                 <span className="block text-xs text-subtle">
-                  Row-level: one session per row with SQS / UES / User Satisfaction result
+                  Row-level: one row per Case × expected result
+                  {includeHistory ? " × round" : ""}
                 </span>
               </span>
             </button>

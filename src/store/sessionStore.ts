@@ -1,21 +1,73 @@
 import { create } from "zustand";
 import type {
   ActivityEntry,
-  ReviewAnnotationResult,
-  ReviewFlow,
+  CaseRow,
+  CaseType,
+  ProblemType,
+  ResultScore,
+  ResultType,
   ReviewRole,
-  SessionRow,
 } from "@/mock/types";
-import { sessions as defaultSessions } from "@/mock/sessions";
-import { reviewFlows as defaultReviewFlows } from "@/mock/reviewFlow";
-import { diffDims } from "@/lib/diff";
-import { isPrivileged } from "@/lib/currentUser";
+import { cases as defaultCases } from "@/mock/sessions";
+import { samePerson } from "@/lib/access";
+import { isAdmin } from "@/lib/currentUser";
 
-const STORAGE_KEY = "bytehi-cycle-state-v10";
+const STORAGE_KEY = "bytehi-cycle-state-v11";
+
+// ---- Flow (per-Case runtime state) -----------------------------------------
+
+/** One submitted round for one Case: all its expected results scored. */
+export interface RoundResult {
+  /** resultId -> score bundle */
+  results: Record<string, ResultScore>;
+  ruleVersion: number;
+  /** actual person who submitted this round */
+  by: string;
+  at: string;
+}
+
+/** Case-level flow status (PRD 口径). */
+export type CaseFlowStatus =
+  | "Diff" // 待拉齐（Diff）
+  | "Waiting for QC"
+  | "QC Completed";
+
+/** Slot task status. */
+export type SlotStatus = "Unassigned" | "Assigned" | "Submitted (No QC)";
+
+export interface CaseFlow {
+  caseId: string;
+  taskId: string;
+  mode: "Normal" | "Back-to-Back";
+  // slots
+  aAssignee?: string;
+  bAssignee?: string;
+  cReviewer?: string;
+  aResult?: RoundResult;
+  bResult?: RoundResult;
+  cResult?: RoundResult;
+  /** first-ever A / B submission (never overwritten; for individual accuracy) */
+  aFirstResult?: RoundResult;
+  bFirstResult?: RoundResult;
+  /** frozen at reconcile / A submit (Normal); the QC baseline */
+  finalizedBaseline?: RoundResult;
+  /** baseline frozen at sampling time (QC compares against this) */
+  sampledBaseline?: RoundResult;
+  /** current-effective result (C submission, or admin override) */
+  currentResult?: RoundResult;
+  reconcileStatus?: "Pending" | "Reconciled";
+  reconciledBy?: string;
+  sampledForQC?: boolean;
+  qcCompleted?: boolean;
+  /** where the current-effective result comes from */
+  finalSource?: "baseline" | "qc" | "admin";
+  baselineFinalizedBy?: string;
+  qcReviewer?: string;
+}
 
 interface PersistShape {
-  sessions: SessionRow[];
-  reviewFlows: ReviewFlow[];
+  cases: CaseRow[];
+  flows: CaseFlow[];
   logs: ActivityEntry[];
   imported: boolean;
   importSource: string | null;
@@ -25,15 +77,19 @@ function now(): string {
   return new Date().toISOString().slice(0, 16).replace("T", " ");
 }
 
+function clone<T>(v: T): T {
+  return JSON.parse(JSON.stringify(v));
+}
+
 function loadInitial(): PersistShape {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as PersistShape;
-      if (parsed && Array.isArray(parsed.sessions) && parsed.sessions.length > 0) {
+      if (parsed && Array.isArray(parsed.cases) && parsed.cases.length > 0) {
         return {
-          sessions: parsed.sessions,
-          reviewFlows: parsed.reviewFlows ?? defaultReviewFlows,
+          cases: parsed.cases,
+          flows: parsed.flows ?? [],
           logs: parsed.logs ?? [],
           imported: parsed.imported ?? false,
           importSource: parsed.importSource ?? "session restore",
@@ -43,76 +99,109 @@ function loadInitial(): PersistShape {
   } catch {
     // ignore corrupt storage
   }
-  return {
-    sessions: defaultSessions,
-    reviewFlows: defaultReviewFlows,
-    logs: [],
-    imported: false,
-    importSource: null,
-  };
+  return { cases: clone(defaultCases), flows: [], logs: [], imported: false, importSource: null };
 }
 
-export type AnnotationResult = ReviewAnnotationResult;
+// ---- Config types ----------------------------------------------------------
 
 export interface QaAllocation {
   name: string;
   quantity: number;
 }
-
-/** One back-to-back pairing row: the SAME `quantity` cases go to both A and B. */
 export interface QaPair {
   aName: string;
   bName: string;
   quantity: number;
 }
-
-export interface AssignConfig {
-  aEmail: string;
-  bEmail?: string;
-  backToBackEnabled: boolean;
-  /** Second-round style for B: blind double-blind (default) or open review (明检). */
-  bMode?: "blind" | "open";
+export interface DistributeConfig {
+  mode: "Normal" | "Back-to-Back";
+  /** selected Types to restrict this round; empty = All */
+  types: CaseType[];
+  /** Normal only */
   aDistribution?: QaAllocation[];
-  /** Back-to-back pairings (A | B | quantity per row). */
+  /** Back-to-Back only */
   pairDistribution?: QaPair[];
+  /** admin may bypass A≠B */
+  override?: boolean;
 }
-
 export interface SamplingConfig {
   scope: "all_qas" | "by_qa";
   qaEmail?: string;
   method: "percentage" | "absolute";
   value: number;
-  /** 指派给这批抽中 case 的 C 复核人（管理员 / QA）。 */
   cReviewer?: string;
+  /** admin may bypass anti-self-review exclusion of C */
+  override?: boolean;
 }
 
+/** All results for one Case submitted at once. */
+export type PerResultScores = Record<string, ResultScore>;
+
+// ---- Derived helpers (exported for pages) ----------------------------------
+
+export function isBackToBack(flow?: CaseFlow): boolean {
+  return flow?.mode === "Back-to-Back";
+}
+
+/** Case-level flow status, or undefined if still in slot stage. */
+export function caseFlowStatus(flow?: CaseFlow): CaseFlowStatus | undefined {
+  if (!flow) return undefined;
+  if (flow.qcCompleted) return "QC Completed";
+  if (flow.sampledForQC) return "Waiting for QC";
+  if (flow.reconcileStatus === "Pending") return "Diff";
+  return undefined;
+}
+
+/** Combined status string for a Case (used by list & filters). */
+export function caseStatus(caseRow: CaseRow, flow?: CaseFlow): string {
+  if (caseRow.invalid) return "Invalid";
+  const cf = caseFlowStatus(flow);
+  if (cf === "QC Completed") return "QC Completed";
+  if (cf === "Waiting for QC") return "Waiting for QC";
+  if (cf === "Diff") return "待拉齐（Diff）";
+  // slot stage — reflect A slot
+  return slotStatus(flow, "A");
+}
+
+export function slotStatus(flow: CaseFlow | undefined, slot: "A" | "B" | "C"): SlotStatus {
+  if (!flow) return "Unassigned";
+  const assignee = slot === "A" ? flow.aAssignee : slot === "B" ? flow.bAssignee : flow.cReviewer;
+  const result = slot === "A" ? flow.aResult : slot === "B" ? flow.bResult : flow.cResult;
+  if (!assignee) return "Unassigned";
+  if (!result) return "Assigned";
+  return "Submitted (No QC)";
+}
+
+/** Whether a Case has formed its Finalized Baseline (poolable). */
+function hasFinalizedBaseline(flow?: CaseFlow): boolean {
+  return !!flow?.finalizedBaseline;
+}
+
+// ---- Store ------------------------------------------------------------------
+
 interface SessionStore {
-  sessions: SessionRow[];
-  reviewFlows: ReviewFlow[];
+  cases: CaseRow[];
+  flows: CaseFlow[];
   logs: ActivityEntry[];
   imported: boolean;
   importSource: string | null;
 
-  loadSessions: (rows: SessionRow[], source: string) => void;
+  loadCases: (rows: CaseRow[], source: string) => void;
   reset: () => void;
-  getSession: (sessionId: string) => SessionRow | undefined;
-  getReviewFlow: (sessionId: string) => ReviewFlow | undefined;
-  getLogs: (sessionId: string) => ActivityEntry[];
 
-  assignWorkflow: (sessionId: string, config: AssignConfig, operator: string, isReassign: boolean) => void;
-  distributeTaskCases: (taskId: string, config: AssignConfig, operator: string) => void;
-  assignSingleQa: (sessionId: string, qaName: string, operator: string, slot?: "A" | "B") => void;
-  batchEditReasons: (sessionIds: string[], reasonByDim: Record<string, string>, operator: string) => void;
-  submitAnnotation: (
-    sessionId: string,
-    result: AnnotationResult,
-    operator: string,
-    role?: ReviewRole,
-  ) => void;
-  /** Resolve an A/B double-blind diff: QA picks the final per-dimension result;
-   * it becomes both A and B baseline, and the case enters the QC sampling pool. */
-  reconcileDiff: (sessionId: string, result: AnnotationResult, operator: string) => void;
+  getCase: (caseId: string) => CaseRow | undefined;
+  getCaseBySession: (sessionId: string) => CaseRow | undefined;
+  getFlow: (caseId: string) => CaseFlow | undefined;
+  getLogs: (caseId: string) => ActivityEntry[];
+
+  distributeCases: (taskId: string, config: DistributeConfig, operator: string) => number;
+  assignSingleCase: (caseId: string, slot: "A" | "B", qaName: string, operator: string) => void;
+  submitAnnotation: (caseId: string, role: ReviewRole, scores: PerResultScores, ruleVersion: number, operator: string) => void;
+  reconcileDiff: (caseId: string, agreed: PerResultScores, ruleVersion: number, operator: string) => void;
   startSampling: (taskId: string, config: SamplingConfig, operator: string) => number;
+  batchEdit: (caseIds: string[], reasonByDim: Record<string, string>, operator: string) => void;
+  markInvalid: (caseId: string, operator: string) => void;
+  restoreInvalid: (caseId: string, operator: string) => void;
 }
 
 export const useSessionStore = create<SessionStore>((set, get) => {
@@ -122,14 +211,16 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     set((state) => {
       const next = { ...state, ...patch };
       try {
-        const shape: PersistShape = {
-          sessions: next.sessions,
-          reviewFlows: next.reviewFlows,
-          logs: next.logs,
-          imported: next.imported,
-          importSource: next.importSource,
-        };
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(shape));
+        sessionStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({
+            cases: next.cases,
+            flows: next.flows,
+            logs: next.logs,
+            imported: next.imported,
+            importSource: next.importSource,
+          } satisfies PersistShape),
+        );
       } catch {
         // ignore quota errors
       }
@@ -139,168 +230,90 @@ export const useSessionStore = create<SessionStore>((set, get) => {
 
   const log = (entry: Omit<ActivityEntry, "at">): ActivityEntry => ({ ...entry, at: now() });
 
-  // Normalize an email/name for identity comparison (anti-self-review), so a
-  // free-typed value with stray spaces / casing still matches the same person.
-  const norm = (v?: string) => (v ?? "").trim().toLowerCase();
-  const samePerson = (a?: string, b?: string) => !!a && !!b && norm(a) === norm(b);
+  const nextVersion = (caseId: string): number =>
+    get().logs.filter((l) => l.caseId === caseId && l.version !== undefined).length + 1;
 
-  // Treat a case as Back-to-Back if the flag is on OR any B-side trace exists.
-  // A case that once had a B reviewer (assignee / annotator / submitted result)
-  // must never be judged as "Normal" just because backToBackEnabled got flipped
-  // or lost — otherwise A submitting alone would pool it into QC while the B
-  // half still lingers (a "half normal, half B2B" dirty state).
-  const isBackToBack = (flow: ReviewFlow): boolean =>
-    flow.backToBackEnabled === true ||
-    !!flow.bAssignee ||
-    !!flow.bAnnotator ||
-    !!flow.bResultStatus ||
-    !!flow.bResult;
-
-  // A case is "complete" (ready to enter the QC sampling pool) when:
-  //  - Normal: A submitted.
-  //  - Back-to-Back: BOTH A and B submitted (double-blind needs both halves).
-  const isComplete = (flow: ReviewFlow): boolean => {
-    if (flow.aResultStatus !== "Submitted") return false;
-    if (isBackToBack(flow)) return flow.bResultStatus === "Submitted";
-    return true;
+  const patchFlow = (caseId: string, patch: Partial<CaseFlow>): CaseFlow[] => {
+    const flows = get().flows;
+    const exists = flows.some((f) => f.caseId === caseId);
+    if (exists) return flows.map((f) => (f.caseId === caseId ? { ...f, ...patch } : f));
+    const row = get().getCase(caseId);
+    const base: CaseFlow = { caseId, taskId: row?.taskId ?? "", mode: "Normal" };
+    return [...flows, { ...base, ...patch }];
   };
 
-  const nextVersion = (sessionId: string): number =>
-    get().logs.filter((l) => l.sessionId === sessionId && l.version !== undefined).length + 1;
-
-  const patchSession = (sessionId: string, patch: Partial<SessionRow>): SessionRow[] =>
-    get().sessions.map((s) => (s.sessionId === sessionId ? { ...s, ...patch } : s));
-
-  const patchFlow = (sessionId: string, patch: Partial<ReviewFlow>): ReviewFlow[] => {
-    const flows = get().reviewFlows;
-    const exists = flows.some((f) => f.sessionId === sessionId);
-    if (exists) {
-      return flows.map((f) => (f.sessionId === sessionId ? { ...f, ...patch } : f));
+  // Per-result diff: which resultIds have any dimension score difference.
+  const resultsDiffer = (a: PerResultScores, b: PerResultScores): boolean => {
+    const ids = new Set([...Object.keys(a), ...Object.keys(b)]);
+    for (const id of ids) {
+      const sa = a[id]?.scores ?? {};
+      const sb = b[id]?.scores ?? {};
+      const keys = new Set([...Object.keys(sa), ...Object.keys(sb)]);
+      for (const k of keys) if (sa[k] !== sb[k]) return true;
     }
-    return [
-      ...flows,
-      { sessionId, annotationMode: "Single Annotation", currentState: "A Annotation", ...patch },
-    ];
+    return false;
   };
+
+  const mkRound = (scores: PerResultScores, ruleVersion: number, by: string): RoundResult => ({
+    results: clone(scores),
+    ruleVersion,
+    by,
+    at: now(),
+  });
 
   return {
-    sessions: initial.sessions,
-    reviewFlows: initial.reviewFlows,
+    cases: initial.cases,
+    flows: initial.flows,
     logs: initial.logs,
     imported: initial.imported,
     importSource: initial.importSource,
 
-    loadSessions: (rows, source) =>
-      persist({
-        sessions: rows,
-        reviewFlows: [],
-        logs: [],
-        imported: true,
-        importSource: source,
-      }),
+    loadCases: (rows, source) =>
+      persist({ cases: rows, flows: [], logs: [], imported: true, importSource: source }),
 
     reset: () => {
       sessionStorage.removeItem(STORAGE_KEY);
-      set({
-        sessions: defaultSessions,
-        reviewFlows: defaultReviewFlows,
-        logs: [],
-        imported: false,
-        importSource: null,
-      });
+      set({ cases: clone(defaultCases), flows: [], logs: [], imported: false, importSource: null });
     },
 
-    getSession: (sessionId) => get().sessions.find((s) => s.sessionId === sessionId),
-    getReviewFlow: (sessionId) => get().reviewFlows.find((f) => f.sessionId === sessionId),
-    getLogs: (sessionId) => get().logs.filter((l) => l.sessionId === sessionId),
+    getCase: (caseId) => get().cases.find((c) => c.caseId === caseId),
+    getCaseBySession: (sessionId) => get().cases.find((c) => c.sessionId === sessionId),
+    getFlow: (caseId) => get().flows.find((f) => f.caseId === caseId),
+    getLogs: (caseId) => get().logs.filter((l) => l.caseId === caseId),
 
-    assignWorkflow: (sessionId, config, operator, isReassign) => {
-      const fmtDist = (dist?: { name: string; quantity: number }[]) =>
-        dist && dist.length > 0
-          ? dist.map((d) => `${d.name}×${d.quantity}`).join(", ")
-          : config.aEmail;
-      const detail = config.backToBackEnabled
-        ? `A=[${fmtDist(config.aDistribution)}], B=${config.bEmail ?? "—"}, back-to-back=on`
-        : `A=[${fmtDist(config.aDistribution)}], back-to-back=off`;
-      persist({
-        sessions: patchSession(sessionId, {
-          annotator: config.aEmail,
-          qaOwner: operator,
-          status: config.backToBackEnabled ? "A Assigned · Waiting A Annotation" : "A Assigned",
-          latestActivityLog: `${operator} ${isReassign ? "reassigned" : "assigned"} workflow ${detail} at ${now()}`,
-        }),
-        reviewFlows: patchFlow(sessionId, {
-          annotationMode: config.backToBackEnabled ? "Back-to-Back" : "Single Annotation",
-          currentState: "A Annotation",
-          aAssignee: config.aEmail,
-          bAssignee: config.backToBackEnabled ? config.bEmail : undefined,
-          backToBackEnabled: config.backToBackEnabled,
-          aAnnotator: undefined,
-          bAnnotator: undefined,
-          cReviewer: undefined,
-          aResult: undefined,
-          bResult: undefined,
-          cResult: undefined,
-          aResultStatus: undefined,
-          bResultStatus: undefined,
-          cResultStatus: undefined,
-          sampledForQC: false,
-          sampleBatchLabel: undefined,
-          finalResultStatus: "Not Ready",
-        }),
-        logs: [
-          ...get().logs,
-          log({
-            sessionId,
-            operator,
-            action: isReassign ? "Reassign Workflow" : "Assign Workflow",
-            detail,
-          }),
-        ],
-      });
-    },
+    distributeCases: (taskId, config, operator) => {
+      const admin = isAdmin(operator);
+      const backToBack = config.mode === "Back-to-Back";
 
-    distributeTaskCases: (taskId, config, operator) => {
-      // Sequentially deal a task's unassigned cases to the QAs in fill order.
-      // Within a round, QA1 takes the first N, QA2 the next M, etc.
-      // Back-to-back assigns BOTH an A and a B reviewer to the SAME case, so the
-      // A and B rows each independently slice the same set of cases.
-      const backToBack = config.backToBackEnabled;
-
-      // A task set is uniformly one mode. Once any case in the task has a flow,
-      // new distributions must reuse that mode — mixing normal + back-to-back in
-      // the same task is rejected.
-      const existingFlows = get().reviewFlows.filter((f) =>
-        get().sessions.some((s) => s.sessionId === f.sessionId && s.taskId === taskId),
-      );
-      if (existingFlows.length > 0) {
-        const existingBtb = existingFlows.some((f) => f.backToBackEnabled);
-        if (existingBtb !== backToBack) {
-          throw new Error(
-            `该 task 已按「${existingBtb ? "Back-to-Back" : "Normal"}」模式分配，不能与「${backToBack ? "Back-to-Back" : "Normal"}」混用。请沿用同一模式。`,
-          );
+      // Mode is locked after the first distribution.
+      const existing = get().flows.filter((f) => f.taskId === taskId);
+      if (existing.length > 0) {
+        const lockedMode = existing[0].mode;
+        if (lockedMode !== config.mode) {
+          throw new Error(`该 task 已锁定「${lockedMode}」模式，不能改用「${config.mode}」。`);
         }
       }
 
-      const unassigned = get()
-        .sessions.filter((s) => s.taskId === taskId && s.status === "Unassigned")
+      // Candidate cases: unassigned, non-Invalid, within selected Types.
+      const typeSet = new Set(config.types);
+      const candidates = get()
+        .cases.filter((c) => {
+          if (c.taskId !== taskId || c.invalid) return false;
+          if (typeSet.size > 0 && !typeSet.has(c.caseType)) return false;
+          const f = get().getFlow(c.caseId);
+          return !f?.aAssignee; // unassigned A slot
+        })
         .slice()
-        .sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+        .sort((a, b) => a.caseId.localeCompare(b.caseId));
 
-      // Build the per-case A/B fill order.
-      //  - Normal: aDistribution rows (A only).
-      //  - Back-to-back: pairDistribution rows (A | B | quantity) — the SAME
-      //    `quantity` cases in each row go to both that row's A and B.
+      // Build fill order.
       const aByIdx: (string | undefined)[] = [];
       const bByIdx: (string | undefined)[] = [];
       if (backToBack) {
         const pairs = config.pairDistribution ?? [];
-        // A and B on the same pairing must be different people (no self-review).
-        if (pairs.some((p) => samePerson(p.aName, p.bName))) {
-          throw new Error("同一行的 A、B 不能是同一个人（不能自己评自己）。");
+        if (!admin && !config.override && pairs.some((p) => samePerson(p.aName, p.bName))) {
+          throw new Error("同一行的 A、B 不能是同一个人（防自审）。管理员可 Override。");
         }
-        // Every effective pair (quantity > 0) must name both an A and a B, so we
-        // never create a "half" B2B case with an empty B slot.
         if (pairs.some((p) => p.quantity > 0 && (!p.aName?.trim() || !p.bName?.trim()))) {
           throw new Error("Back-to-Back 每一行都必须同时填写 A 和 B。");
         }
@@ -311,487 +324,332 @@ export const useSessionStore = create<SessionStore>((set, get) => {
           }
         });
       } else {
-        const aDist = config.aDistribution ?? [];
-        aDist.forEach((d) => {
+        (config.aDistribution ?? []).forEach((d) => {
           for (let i = 0; i < d.quantity; i++) aByIdx.push(d.name);
         });
       }
 
       const total = aByIdx.length;
-      if (total > unassigned.length) {
-        throw new Error(
-          `分配 ${total} 个超过了可分配的 ${unassigned.length} 个 case`,
-        );
+      if (total === 0) throw new Error("请填写要分配的 QA 与数量。");
+      if (total > candidates.length) {
+        throw new Error(`本轮最多可分配 ${candidates.length} 条，当前填写了 ${total} 条。`);
       }
 
       let count = 0;
-      // Collect per-case assignment records so each session gets its own log
-      // entry (visible in the Detail activity log), not just the task-level one.
-      const assignedLog: { sessionId: string; aEmail: string; bEmail?: string }[] = [];
-
-      const sessions = get().sessions.map((s) => {
-        if (s.taskId !== taskId || s.status !== "Unassigned") return s;
-        const idx = unassigned.findIndex((u) => u.sessionId === s.sessionId);
-        const aEmail = aByIdx[idx];
-        if (!aEmail) return s; // beyond A allocation -> stays unassigned
+      let flows = get().flows;
+      const assignedLog: { caseId: string; a: string; b?: string }[] = [];
+      candidates.forEach((c, idx) => {
+        const a = aByIdx[idx];
+        if (!a) return;
+        const b = backToBack ? bByIdx[idx] : undefined;
         count++;
-        const bEmail = backToBack ? bByIdx[idx] : undefined;
-        assignedLog.push({ sessionId: s.sessionId, aEmail, bEmail });
-        return {
-          ...s,
-          annotator: aEmail,
-          // The assigned QA for this case is the A annotator it was dealt to,
-          // not the operator who ran the distribution.
-          qaOwner: aEmail,
-          status: backToBack ? "A Assigned · Waiting A Annotation" : "A Assigned",
-          latestActivityLog: `${operator} distributed to ${aEmail}${
-            backToBack && bByIdx[idx] ? ` (B: ${bByIdx[idx]})` : ""
-          } at ${now()}`,
+        assignedLog.push({ caseId: c.caseId, a, b });
+        const patch: Partial<CaseFlow> = {
+          taskId,
+          mode: config.mode,
+          aAssignee: a,
+          bAssignee: b,
         };
+        const exists = flows.some((f) => f.caseId === c.caseId);
+        flows = exists
+          ? flows.map((f) => (f.caseId === c.caseId ? { ...f, ...patch } : f))
+          : [...flows, { caseId: c.caseId, taskId, mode: config.mode, ...patch }];
       });
 
-      const reviewFlows = (() => {
-        let flows = get().reviewFlows;
-        unassigned.forEach((u, idx) => {
-          const aEmail = aByIdx[idx];
-          if (!aEmail) return;
-          const bEmail = backToBack ? bByIdx[idx] : undefined;
-          const patch: Partial<ReviewFlow> = {
-            annotationMode: backToBack ? "Back-to-Back" : "Single Annotation",
-            currentState: "A Annotation",
-            aAssignee: aEmail,
-            bAssignee: bEmail,
-            backToBackEnabled: backToBack,
-            bMode: backToBack ? config.bMode ?? "blind" : undefined,
-            aAnnotator: undefined,
-            bAnnotator: undefined,
-            cReviewer: undefined,
-            aResult: undefined,
-            bResult: undefined,
-            cResult: undefined,
-            aResultStatus: undefined,
-            bResultStatus: undefined,
-            cResultStatus: undefined,
-            sampledForQC: false,
-            sampleBatchLabel: undefined,
-            finalResultStatus: "Not Ready",
-          };
-          const exists = flows.some((f) => f.sessionId === u.sessionId);
-          flows = exists
-            ? flows.map((f) => (f.sessionId === u.sessionId ? { ...f, ...patch } : f))
-            : [...flows, { sessionId: u.sessionId, annotationMode: "Single Annotation", currentState: "A Annotation", ...patch }];
-        });
-        return flows;
-      })();
-
       const detail = backToBack
-        ? `pairs=[${(config.pairDistribution ?? [])
-            .map((p) => `${p.aName}+${p.bName}×${p.quantity}`)
-            .join(", ")}], back-to-back=on · ${count} case(s)`
-        : `A=[${(config.aDistribution ?? [])
-            .map((d) => `${d.name}×${d.quantity}`)
-            .join(", ")}] · ${count} case(s)`;
-
-      // Assignees named on the action label (deduped) so the log reads
-      // "Batch Assign to <who>" at a glance.
-      const assignees = Array.from(
-        new Set(
-          assignedLog.flatMap((a) => (a.bEmail ? [a.aEmail, a.bEmail] : [a.aEmail])),
-        ),
-      );
-      const assigneeLabel =
-        assignees.length === 0
-          ? ""
-          : assignees.length <= 2
-            ? assignees.join(", ")
-            : `${assignees[0]} +${assignees.length - 1}`;
+        ? `pairs=[${(config.pairDistribution ?? []).map((p) => `${p.aName}+${p.bName}×${p.quantity}`).join(", ")}] · ${count} case(s)`
+        : `A=[${(config.aDistribution ?? []).map((d) => `${d.name}×${d.quantity}`).join(", ")}] · ${count} case(s)`;
 
       persist({
-        sessions,
-        reviewFlows,
+        flows,
         logs: [
           ...get().logs,
-          log({
-            sessionId: taskId,
-            operator,
-            action: assigneeLabel ? `Batch Assign to ${assigneeLabel}` : "Batch Assign",
-            detail,
-          }),
-          // One entry per assigned case, so the Detail activity log shows it too.
+          log({ caseId: taskId, operator, action: `Batch Assign (${config.mode})`, detail }),
           ...assignedLog.map((a) =>
             log({
-              sessionId: a.sessionId,
+              caseId: a.caseId,
               operator,
-              action: a.bEmail ? `Batch Assign to ${a.aEmail}, ${a.bEmail}` : `Batch Assign to ${a.aEmail}`,
-              detail: a.bEmail
-                ? `Assigned A=${a.aEmail}, B=${a.bEmail} (Back-to-Back)`
-                : `Assigned A=${a.aEmail}`,
+              action: a.b ? `Batch Assign A=${a.a}, B=${a.b}` : `Batch Assign A=${a.a}`,
+              detail: config.mode,
             }),
           ),
         ],
       });
+      return count;
     },
 
-    assignSingleQa: (sessionId, qaName, operator, slot = "A") => {
-      const current = get().getSession(sessionId);
-      const flow = get().getReviewFlow(sessionId);
-
+    assignSingleCase: (caseId, slot, qaName, operator) => {
+      const flow = get().getFlow(caseId);
+      const admin = isAdmin(operator);
       if (slot === "B") {
-        // Reassign the B slot only (back-to-back cases). B and A must be
-        // different people (no self-review). Only while B hasn't submitted.
-        if (!flow?.backToBackEnabled) {
-          throw new Error("该 case 不是 Back-to-Back，没有 B 可指派。");
+        if (flow?.mode !== "Back-to-Back") throw new Error("该 case 不是 Back-to-Back，没有 B 可指派。");
+        const aPerson = flow.aResult?.by ?? flow.aAssignee;
+        if (!admin && samePerson(qaName, aPerson)) throw new Error("B 不能是 A 那个人（防自审）。管理员可 Override。");
+        if (flow.sampledForQC && !admin) throw new Error("已进入 QC，标注编辑不能改派。");
+      } else {
+        const bPerson = flow?.bResult?.by ?? flow?.bAssignee;
+        if (flow?.mode === "Back-to-Back" && !admin && samePerson(qaName, bPerson)) {
+          throw new Error("A 不能是 B 那个人（防自审）。管理员可 Override。");
         }
-        const aPerson = flow.aAnnotator ?? flow.aAssignee;
-        if (samePerson(qaName, aPerson)) {
-          throw new Error("B 不能是 A 那个人（不能自己评自己）。");
-        }
-        if (flow.bResultStatus === "Submitted") {
-          throw new Error("B 已提交，不能再重新指派。");
+        if (flow?.sampledForQC && !admin) throw new Error("已进入 QC，标注编辑不能改派。");
+      }
+      persist({
+        flows: patchFlow(caseId, slot === "A" ? { aAssignee: qaName } : { bAssignee: qaName }),
+        logs: [
+          ...get().logs,
+          log({ caseId, operator, action: `Assign ${slot} to ${qaName}`, detail: `${slot} = ${qaName}` }),
+        ],
+      });
+    },
+
+    submitAnnotation: (caseId, role, scores, ruleVersion, operator) => {
+      const flow = get().getFlow(caseId);
+      const version = nextVersion(caseId);
+      const round = mkRound(scores, ruleVersion, operator);
+      const firstResultType = get().getCase(caseId)?.expectedResults[0]?.resultType;
+
+      if (role === "A") {
+        const b2b = flow?.mode === "Back-to-Back";
+        const patch: Partial<CaseFlow> = { aResult: round };
+        if (!flow?.aFirstResult) patch.aFirstResult = round;
+        if (b2b) {
+          const bDone = !!flow?.bResult;
+          if (bDone) {
+            const disagree = resultsDiffer(scores, flow!.bResult!.results);
+            if (disagree) {
+              patch.reconcileStatus = "Pending";
+            } else {
+              patch.finalizedBaseline = round;
+              patch.baselineFinalizedBy = operator;
+              patch.reconcileStatus = "Reconciled";
+            }
+          }
+          // else: wait for B
+        } else {
+          // Normal: A submit finalizes the baseline immediately.
+          patch.finalizedBaseline = round;
+          patch.baselineFinalizedBy = operator;
         }
         persist({
-          sessions: patchSession(sessionId, {
-            latestActivityLog: `${operator} assigned B reviewer ${qaName} at ${now()}`,
-          }),
-          reviewFlows: patchFlow(sessionId, { bAssignee: qaName }),
+          flows: patchFlow(caseId, patch),
           logs: [
             ...get().logs,
-            log({ sessionId, operator, action: `Assign B to ${qaName}`, detail: `B = ${qaName}` }),
+            log({ caseId, operator, role: "A", action: "Submit A Annotation", version, resultType: firstResultType, snapshot: { ruleVersion, results: clone(scores) } }),
           ],
         });
         return;
       }
 
-      // Only (re)initialize the A flow while the case is still in the A stage
-      // (unassigned or A not yet submitted). Once A has submitted / the case is
-      // in QC / finalized, reassigning must NOT reset the flow or overwrite the
-      // recorded A annotator — only the QA owner label changes.
-      // Anti-self-review: in back-to-back, A can't be the same person as B.
-      if (flow?.backToBackEnabled) {
-        const bPerson = flow.bAnnotator ?? flow.bAssignee;
-        if (samePerson(qaName, bPerson)) {
-          throw new Error("A 不能是 B 那个人（不能自己评自己）。");
-        }
-      }
-      const inAStage = !flow || flow.aResultStatus !== "Submitted";
-      const isUnassigned = current?.status === "Unassigned" || !current?.status;
-      persist({
-        sessions: patchSession(sessionId, {
-          qaOwner: qaName,
-          ...(inAStage && isUnassigned ? { status: "A Assigned", annotator: qaName } : {}),
-          latestActivityLog: `${operator} assigned QA owner ${qaName} at ${now()}`,
-        }),
-        reviewFlows: inAStage
-          ? patchFlow(sessionId, {
-              annotationMode: flow?.backToBackEnabled ? "Back-to-Back" : "Single Annotation",
-              currentState: "A Annotation",
-              aAssignee: qaName,
-            })
-          : get().reviewFlows,
-        logs: [
-          ...get().logs,
-          log({ sessionId, operator, action: `Assign to ${qaName}`, detail: `QA owner = ${qaName}` }),
-        ],
-      });
-    },
-
-    batchEditReasons: (sessionIds, reasonByDim, operator) => {
-      const dims = Object.entries(reasonByDim).filter(([, v]) => v);
-      if (dims.length === 0 || sessionIds.length === 0) return;
-      const idSet = new Set(sessionIds);
-      // Cases already finalized by C are immutable — batch edits must skip them.
-      const finalizedIds = new Set(
-        get()
-          .reviewFlows.filter((f) => f.currentState === "Final Result Ready")
-          .map((f) => f.sessionId),
-      );
-      const editedIds: string[] = [];
-      const sessions = get().sessions.map((s) => {
-        if (!idSet.has(s.sessionId) || !s.bot || finalizedIds.has(s.sessionId)) return s;
-        const reasons = { ...(s.bot.reasons ?? {}) };
-        for (const [dim, text] of dims) reasons[dim] = text;
-        editedIds.push(s.sessionId);
-        return {
-          ...s,
-          bot: { ...s.bot, reasons },
-          latestActivityLog: `${operator} batch-edited reasons at ${now()}`,
-        };
-      });
-      if (editedIds.length === 0) return;
-      const newLogs = editedIds.map((sessionId) =>
-        log({
-          sessionId,
-          operator,
-          action: "Batch Edit Reasons",
-          detail: dims.map(([d]) => d).join(", "),
-        }),
-      );
-      persist({ sessions, logs: [...get().logs, ...newLogs] });
-    },
-
-    submitAnnotation: (sessionId, result, operator, role = "A") => {
-      const currentFlow = get().getReviewFlow(sessionId);
-      const sessionPatch: Partial<SessionRow> = {
-        latestActivityLog: `${operator} submitted ${role} annotation at ${now()}`,
-      };
-      let flowPatch: Partial<ReviewFlow> = {};
-      let action = `Submit ${role} Annotation`;
-
-      // Bot / Human scores land on the row for A and C submissions.
-      const scorePatch: Partial<SessionRow> = {
-        bot: result.bot,
-        human: result.human,
-        ruleVersion: result.ruleVersion,
-        annotator: operator,
-        // Problem Type is identified manually by the annotator; persist their
-        // choice onto the row (keep the prior value if not re-selected).
-        problemType: result.problemType ?? get().getSession(sessionId)?.problemType,
-      };
-
-      if (role === "A") {
-        // Open review (明检): B grades on top of A and is authoritative. Once B
-        // has submitted, A is locked — letting A re-submit would overwrite the
-        // agreed B result and re-introduce a fake A/B diff. Reject it here.
-        // 权限账号例外：它有权在 QC 定案后回改前面，所以不受这个明检 A 锁定限制。
-        if (
-          !isPrivileged(operator) &&
-          currentFlow?.bMode === "open" &&
-          currentFlow?.bResultStatus === "Submitted"
-        ) {
-          throw new Error("明检以 B 为准：B 已提交，A 不能再修改。");
-        }
-        // First-round annotation. Preserve the pre-assigned mode (Back-to-Back
-        // stays Back-to-Back) — submitting A must never downgrade a B2B case.
-        // A B2B case only becomes "Ready for C Sampling" once B is also in; if B
-        // is still pending, A submitting just marks A done and waits for B.
-        const b2b = isBackToBack(currentFlow ?? ({} as ReviewFlow));
-        const bDone = currentFlow?.bResultStatus === "Submitted";
-        Object.assign(sessionPatch, scorePatch, {
-          status: "Completed Annotation",
-        });
-        flowPatch = {
-          annotationMode: b2b ? "Back-to-Back" : "Single Annotation",
-          currentState: b2b && !bDone ? "A Annotation" : "Ready for C Sampling",
-          aAnnotator: operator,
-          aResult: result,
-          aResultStatus: "Submitted",
-          bAnnotator: currentFlow?.bAnnotator,
-          bResult: currentFlow?.bResult,
-          bResultStatus: currentFlow?.bResultStatus,
-          bAssignee: currentFlow?.bAssignee,
-          backToBackEnabled: b2b ? true : currentFlow?.backToBackEnabled,
-          sampledForQC: currentFlow?.sampledForQC ?? false,
-          finalResultStatus: "Not Ready",
-        };
-      } else if (role === "B") {
-        // The B slot only exists on a back-to-back case (assigned up front).
-        // Reject role=B on a non-B2B case so it can't silently "turn" a Normal
-        // task into B2B (single source of truth: mode is set at assignment).
-        if (!currentFlow?.backToBackEnabled) {
-          throw new Error("该 case 不是 Back-to-Back，不能以 B 身份提交。");
-        }
-        // Auto-routing on B submit:
-        //  - Open review (明检): B graded on top of A and is authoritative, so
-        //    B's result overwrites A too — A/B become one agreed result, no diff.
-        //  - Blind & agreed: straight into the QC sampling pool.
-        //  - Blind & disagree: mark "Pending" reconcile; QA resolves before pooling.
-        const isOpen = currentFlow?.bMode === "open";
-        const aBot = currentFlow?.aResult?.bot;
-        const disagree = !isOpen && !!aBot && diffDims(aBot, result.bot).size > 0;
-        Object.assign(
-          sessionPatch,
-          // 明检以 B 为准：B 覆写 A 后 B 才是权威结果，主行分数也要跟着更新成 B 的。
-          isOpen ? scorePatch : {},
-          {
-            status: disagree ? "Back-to-Back Diff · Pending Reconcile" : "Back-to-Back Completed",
-          },
-        );
-        flowPatch = {
-          annotationMode: "Back-to-Back",
-          currentState: "Ready for C Sampling",
-          bAnnotator: operator,
-          bResult: result,
-          bResultStatus: "Submitted",
-          // 明检以 B 为准：同时把 A 覆盖成 B 的结果，A/B 统一、不留假 diff。
-          ...(isOpen ? { aResult: result } : {}),
-          reconcileStatus: disagree ? "Pending" : undefined,
-          sampledForQC: currentFlow?.sampledForQC ?? false,
-          finalResultStatus: "Not Ready",
-        };
-      } else {
-        // C overwrite: C's result becomes the authoritative final result.
-        // Baseline = B when a second reviewer submitted (double-blind), else A.
-        const isDouble = currentFlow?.bResultStatus === "Submitted";
-        const baseline = (isDouble ? currentFlow?.bResult?.bot : currentFlow?.aResult?.bot) ?? currentFlow?.aResult?.bot;
-        const overwrittenDims: string[] = [];
-        if (baseline) {
-          const keys = new Set([...Object.keys(baseline.scores), ...Object.keys(result.bot.scores)]);
-          for (const k of keys) {
-            if (baseline.scores[k] !== result.bot.scores[k]) overwrittenDims.push(k);
+      if (role === "B") {
+        if (flow?.mode !== "Back-to-Back") throw new Error("该 case 不是 Back-to-Back，不能以 B 身份提交。");
+        const patch: Partial<CaseFlow> = { bResult: round };
+        if (!flow?.bFirstResult) patch.bFirstResult = round;
+        const aDone = !!flow?.aResult;
+        if (aDone) {
+          const disagree = resultsDiffer(scores, flow!.aResult!.results);
+          if (disagree) {
+            patch.reconcileStatus = "Pending";
+          } else {
+            patch.finalizedBaseline = flow!.aResult!;
+            patch.baselineFinalizedBy = operator;
+            patch.reconcileStatus = "Reconciled";
           }
         }
-        action = "C Overwrite (Final)";
-        Object.assign(sessionPatch, scorePatch, {
-          status: "Final Result Ready",
+        persist({
+          flows: patchFlow(caseId, patch),
+          logs: [
+            ...get().logs,
+            log({ caseId, operator, role: "B", action: "Submit B Annotation", version, resultType: firstResultType, snapshot: { ruleVersion, results: clone(scores) } }),
+          ],
         });
-        flowPatch = {
-          currentState: "Final Result Ready",
-          cReviewer: operator,
-          cResult: result,
-          cResultStatus: "Submitted",
-          sampledForQC: true,
-          finalResultStatus: "Ready",
-          overwrittenDims,
-        };
+        return;
       }
 
-      const version = nextVersion(sessionId);
-
+      // role === "C": C submission becomes the current-effective result.
       persist({
-        sessions: patchSession(sessionId, sessionPatch),
-        reviewFlows: patchFlow(sessionId, flowPatch),
+        flows: patchFlow(caseId, {
+          cResult: round,
+          cReviewer: operator,
+          currentResult: round,
+          qcCompleted: true,
+          finalSource: "qc",
+          qcReviewer: operator,
+        }),
         logs: [
           ...get().logs,
-          log({
-            sessionId,
-            operator,
-            action,
-            version,
-            detail: `${role === "C" ? `C overwrite · ${(flowPatch.overwrittenDims ?? []).length} dim(s) changed · ` : ""}User Satisfaction ${result.bot.userSatisfaction.toFixed(2)} · SQS ${result.bot.sqsTotal.toFixed(2)} (${result.bot.sqsPass ? "Pass" : "Fail"}) · UES ${result.bot.uesTotal.toFixed(2)}`,
-            snapshot: {
-              ruleVersion: result.ruleVersion,
-              bot: result.bot,
-              human: result.human,
-            },
-          }),
+          log({ caseId, operator, role: "C", action: "C Decision (Final)", version, resultType: firstResultType, snapshot: { ruleVersion, results: clone(scores) } }),
         ],
       });
     },
 
-    reconcileDiff: (sessionId, result, operator) => {
-      const flow = get().getReviewFlow(sessionId);
-      if (!flow) throw new Error("找不到该 case 的 review flow。");
-      if (flow.reconcileStatus !== "Pending") {
-        throw new Error("该 case 不处于待拉齐状态。");
-      }
-      // The reconciled result becomes the single agreed baseline: write it into
-      // BOTH A and B so downstream QC (which reads A/B as baseline) is consistent,
-      // and the A/B expanded rows show the same agreed scores.
-      const agreed: ReviewAnnotationResult = {
-        ruleVersion: result.ruleVersion,
-        bot: result.bot,
-        human: result.human,
-      };
-      const version = nextVersion(sessionId);
+    reconcileDiff: (caseId, agreed, ruleVersion, operator) => {
+      const flow = get().getFlow(caseId);
+      if (!flow) throw new Error("找不到该 case 的 flow。");
+      if (flow.reconcileStatus !== "Pending") throw new Error("该 case 不处于待拉齐状态。");
+      const round = mkRound(agreed, ruleVersion, operator);
+      const version = nextVersion(caseId);
+      const firstResultType = get().getCase(caseId)?.expectedResults[0]?.resultType;
       persist({
-        sessions: patchSession(sessionId, {
-          bot: result.bot,
-          human: result.human,
-          ruleVersion: result.ruleVersion,
-          status: "Back-to-Back Completed",
-          latestActivityLog: `${operator} reconciled A/B diff at ${now()}`,
-        }),
-        reviewFlows: patchFlow(sessionId, {
-          aResult: agreed,
-          bResult: agreed,
+        flows: patchFlow(caseId, {
+          finalizedBaseline: round,
+          baselineFinalizedBy: operator,
           reconcileStatus: "Reconciled",
           reconciledBy: operator,
-          currentState: "Ready for C Sampling",
-          finalResultStatus: "Not Ready",
         }),
         logs: [
           ...get().logs,
-          log({
-            sessionId,
-            operator,
-            action: `Reconcile A/B to ${operator}`,
-            version,
-            detail: `Reconciled diff · User Satisfaction ${result.bot.userSatisfaction.toFixed(2)} · SQS ${result.bot.sqsTotal.toFixed(2)} (${result.bot.sqsPass ? "Pass" : "Fail"}) · UES ${result.bot.uesTotal.toFixed(2)}`,
-            snapshot: { ruleVersion: result.ruleVersion, bot: result.bot, human: result.human },
-          }),
+          log({ caseId, operator, action: "Reconcile A/B Diff", version, resultType: firstResultType, detail: `reconciled by ${operator}`, snapshot: { ruleVersion, results: clone(agreed) } }),
         ],
       });
     },
 
     startSampling: (taskId, config, operator) => {
-      const eligible = get().reviewFlows.filter((flow) => {
-        const session = get().sessions.find((s) => s.sessionId === flow.sessionId);
-        if (!session || session.taskId !== taskId) return false;
-        if (!isComplete(flow) || flow.currentState === "Final Result Ready") return false;
-        // A/B diff not yet reconciled → answer isn't finalized → not poolable.
-        if (flow.reconcileStatus === "Pending") return false;
-        // Exclude cases already sampled in a prior batch so new batches draw
-        // from the not-yet-sampled pool.
-        if (flow.sampledForQC) return false;
+      const admin = isAdmin(operator);
+      // Scope cases (non-Invalid, in this task; by_qa restricts to that person's A/B cases).
+      const scopeCases = get().cases.filter((c) => {
+        if (c.taskId !== taskId || c.invalid) return false;
         if (config.scope === "by_qa" && config.qaEmail) {
-          // Match if the QA participated as EITHER first (A) or second (B) reviewer.
-          const aPerson = flow.aAnnotator ?? flow.aAssignee;
-          const bPerson = flow.bAnnotator ?? flow.bAssignee;
-          return aPerson === config.qaEmail || bPerson === config.qaEmail;
+          const f = get().getFlow(c.caseId);
+          const aP = f?.aResult?.by ?? f?.aAssignee;
+          const bP = f?.bResult?.by ?? f?.bAssignee;
+          return samePerson(aP, config.qaEmail) || samePerson(bP, config.qaEmail);
         }
         return true;
       });
-      const targetCount =
-        config.method === "percentage"
-          ? config.value <= 0
-            ? 0
-            : Math.max(eligible.length > 0 ? 1 : 0, Math.round((eligible.length * config.value) / 100))
-          : Math.min(config.value, eligible.length);
-      const selectedIds = new Set(
-        eligible
-          .slice()
-          .sort((a, b) => a.sessionId.localeCompare(b.sessionId))
-          .slice(0, targetCount)
-          .map((flow) => flow.sessionId),
-      );
+
+      // Precondition: all non-Invalid scope cases must have a Finalized Baseline.
+      const allFinalized = scopeCases.every((c) => hasFinalizedBaseline(get().getFlow(c.caseId)));
+      if (!allFinalized) throw new Error("所选范围内仍有未定稿（未提交或待拉齐）的 case，无法开始抽样。");
+
+      // Eligible = finalized, not yet sampled, and (for non-admin C) passes anti-self-review.
+      const cEmail = config.cReviewer;
+      const eligible = scopeCases.filter((c) => {
+        const f = get().getFlow(c.caseId);
+        if (!hasFinalizedBaseline(f) || f?.sampledForQC) return false;
+        if (cEmail && !admin && !config.override) {
+          const aP = f?.aResult?.by ?? f?.aAssignee;
+          const bP = f?.bResult?.by ?? f?.bAssignee;
+          if (samePerson(cEmail, aP) || samePerson(cEmail, bP)) return false;
+        }
+        return true;
+      });
+
+      const effectiveCount = scopeCases.length;
+      const alreadySampled = scopeCases.filter((c) => get().getFlow(c.caseId)?.sampledForQC).length;
+      let thisTime: number;
+      if (config.method === "percentage") {
+        const target = config.value <= 0 ? 0 : Math.ceil((effectiveCount * config.value) / 100);
+        thisTime = Math.max(0, Math.min(target - alreadySampled, eligible.length));
+      } else {
+        thisTime = Math.max(0, Math.min(config.value, eligible.length));
+      }
+
+      const selected = eligible
+        .slice()
+        .sort((a, b) => a.caseId.localeCompare(b.caseId))
+        .slice(0, thisTime);
+      const selectedIds = new Set(selected.map((c) => c.caseId));
+      if (selectedIds.size === 0) return 0;
+
+      let flows = get().flows;
+      selected.forEach((c) => {
+        const f = get().getFlow(c.caseId);
+        flows = flows.map((x) =>
+          x.caseId === c.caseId
+            ? {
+                ...x,
+                sampledForQC: true,
+                cReviewer: config.cReviewer || x.cReviewer,
+                sampledBaseline: f?.finalizedBaseline,
+                finalSource: "baseline",
+              }
+            : x,
+        );
+      });
 
       persist({
-        reviewFlows: get().reviewFlows.map((flow) => {
-          const session = get().sessions.find((s) => s.sessionId === flow.sessionId);
-          if (!session || session.taskId !== taskId) return flow;
-          if (!isComplete(flow) || flow.currentState === "Final Result Ready") return flow;
-          // Only promote newly selected cases. Never "unsample" cases that were
-          // already sampled in a previous batch — sampling batches are additive.
-          if (!selectedIds.has(flow.sessionId)) return flow;
-          return {
-            ...flow,
-            currentState: "In C QC",
-            sampledForQC: true,
-            // 指派 C 复核人：这批抽中的 case 交给 config.cReviewer 做 QC。
-            cReviewer: config.cReviewer || flow.cReviewer,
-            sampleBatchLabel:
-              config.method === "percentage"
-                ? `${config.value}% sample`
-                : `${config.value} cases sample`,
-            finalResultStatus: "Selected",
-          };
-        }),
-        sessions: get().sessions.map((session) => {
-          if (session.taskId !== taskId) return session;
-          if (selectedIds.has(session.sessionId)) {
-            return {
-              ...session,
-              status: "Selected for C QC",
-              latestActivityLog: `${operator} started sampling at ${now()}`,
-            };
-          }
-          return session;
-        }),
+        flows,
         logs: [
           ...get().logs,
           log({
-            sessionId: taskId,
+            caseId: taskId,
             operator,
             action: "Start Sampling",
             detail:
-              (config.method === "percentage"
-                ? `${config.value}% · selected ${targetCount} cases`
-                : `${config.value} cases · selected ${targetCount} cases`) +
+              (config.method === "percentage" ? `${config.value}% · +${selectedIds.size}` : `${config.value} · +${selectedIds.size}`) +
               (config.cReviewer ? ` · C: ${config.cReviewer}` : ""),
           }),
+          ...selected.map((c) => log({ caseId: c.caseId, operator, action: "Sampled for QC", detail: config.cReviewer ? `C: ${config.cReviewer}` : "" })),
         ],
       });
-      return targetCount;
+      return selectedIds.size;
+    },
+
+    batchEdit: (caseIds, reasonByDim, operator) => {
+      const dims = Object.entries(reasonByDim).filter(([, v]) => v);
+      if (dims.length === 0 || caseIds.length === 0) return;
+      const idSet = new Set(caseIds);
+      const admin = isAdmin(operator);
+      const editedIds: string[] = [];
+      const flows = get().flows.map((f) => {
+        if (!idSet.has(f.caseId)) return f;
+        // Editors may only edit cases not yet in Waiting for QC.
+        const status = caseFlowStatus(f);
+        if (!admin && (status === "Waiting for QC" || status === "QC Completed")) return f;
+        const target = f.currentResult ?? f.finalizedBaseline;
+        if (!target) return f;
+        const results = clone(target.results);
+        for (const r of Object.values(results)) {
+          r.reasons = r.reasons ?? {};
+          for (const [dim, text] of dims) if (r.scores[dim] !== undefined) r.reasons[dim] = text;
+        }
+        editedIds.push(f.caseId);
+        const edited: RoundResult = { ...target, results, by: operator, at: now() };
+        return f.currentResult ? { ...f, currentResult: edited } : { ...f, finalizedBaseline: edited };
+      });
+      if (editedIds.length === 0) return;
+      persist({
+        flows,
+        logs: [
+          ...get().logs,
+          ...editedIds.map((caseId) => log({ caseId, operator, action: "Batch Edit", detail: dims.map(([d]) => d).join(", ") })),
+        ],
+      });
+    },
+
+    markInvalid: (caseId, operator) => {
+      const row = get().getCase(caseId);
+      if (!row || row.invalid) return;
+      const flow = get().getFlow(caseId);
+      persist({
+        cases: get().cases.map((c) =>
+          c.caseId === caseId ? { ...c, invalid: true, prevStatusBeforeInvalid: caseStatus(c, flow) } : c,
+        ),
+        logs: [...get().logs, log({ caseId, operator, action: "Mark Invalid" })],
+      });
+    },
+
+    restoreInvalid: (caseId, operator) => {
+      const row = get().getCase(caseId);
+      if (!row || !row.invalid) return;
+      persist({
+        cases: get().cases.map((c) =>
+          c.caseId === caseId ? { ...c, invalid: false, prevStatusBeforeInvalid: undefined } : c,
+        ),
+        logs: [...get().logs, log({ caseId, operator, action: "Restore Invalid" })],
+      });
     },
   };
 });
+
+// ---- Aggregation selectors (pure, used by Home / TaskDetail) ----------------
+
+export const RESULT_TYPES: ResultType[] = ["Chatbot", "Ticketbot", "Human"];
+
+/** The current-effective result bundle for a case (C > finalized baseline). */
+export function effectiveRound(flow?: CaseFlow): RoundResult | undefined {
+  return flow?.currentResult ?? flow?.finalizedBaseline;
+}
+
+/** Problem type helper for display. */
+export type { ProblemType };

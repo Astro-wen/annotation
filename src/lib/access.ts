@@ -1,38 +1,57 @@
-import type { SessionRow, ReviewFlow } from "@/mock/types";
-import { isVendor } from "@/lib/currentUser";
+import { isAdmin } from "@/lib/currentUser";
 
 /**
- * 供应商权限隔离 —— 可见性判定（硬隔离）。
- *
- * 判断某个账号是否「有份」看到某条 case：只要它出现在这条 case 的任一槽位
- * （A / B / C，或历史 qaOwner）就算有份。
+ * Phase 1 权限门（PRD 2.1 / Detail Actions / QC）。
+ * 标注编辑受防自审与阶段锁约束；标注管理员全权限，可 Override。
+ * Phase 1 内部用户可见全量数据，无供应商 / 语种行级隔离。
  */
-export function isAssignedTo(
-  email: string,
-  session: SessionRow,
-  flow: ReviewFlow | undefined,
-): boolean {
-  if (session.qaOwner === email) return true;
-  if (!flow) return false;
-  return (
-    flow.aAssignee === email ||
-    flow.aAnnotator === email ||
-    flow.bAssignee === email ||
-    flow.bAnnotator === email ||
-    flow.cReviewer === email
-  );
+
+/** 归一化 email/name 做身份比较（忽略大小写与首尾空格）。 */
+export function normId(v?: string | null): string {
+  return (v ?? "").trim().toLowerCase();
+}
+
+export function samePerson(a?: string | null, b?: string | null): boolean {
+  return !!a && !!b && normId(a) === normId(b);
+}
+
+/** Batch Assign / Set Sampling / Assign QA：标注编辑与管理员均可。 */
+export function canAssign(): boolean {
+  return true;
 }
 
 /**
- * 一条 case 是否对当前账号可见：
- *  - 管理员 / QA：可见全部。
- *  - 供应商标注员：只能看到分配给自己的 case（硬隔离，在数据源头过滤）。
+ * 防自审（标注编辑必须遵守；管理员可 Override）：
+ *  - Back-to-Back：A ≠ B。
+ *  - Normal QC：C ≠ A。
+ *  - Back-to-Back QC：C ≠ A / B。
  */
-export function caseVisibleTo(
+export function passesAntiSelfReview(
   email: string,
-  session: SessionRow,
-  flow: ReviewFlow | undefined,
+  candidate: string,
+  conflictPeople: (string | undefined)[],
 ): boolean {
-  if (!isVendor(email)) return true;
-  return isAssignedTo(email, session, flow);
+  if (isAdmin(email)) return true; // 管理员绕过
+  return !conflictPeople.some((p) => samePerson(candidate, p));
+}
+
+/**
+ * 该账号能否对处于给定 Case 流程状态的结果做 QC 前的编辑 / 改派 / Batch Edit。
+ * 标注编辑仅能改未进 Waiting for QC 的 Case；管理员任意阶段。
+ */
+export function canEditBeforeQC(
+  email: string,
+  caseStatus: string,
+): boolean {
+  if (isAdmin(email)) return true;
+  return caseStatus !== "Waiting for QC" && caseStatus !== "QC Completed";
+}
+
+/**
+ * Mark / Restore Invalid：QC Completed 前编辑与管理员均可；
+ * QC Completed 后仅管理员可操作。
+ */
+export function canToggleInvalid(email: string, caseStatus: string): boolean {
+  if (isAdmin(email)) return true;
+  return caseStatus !== "QC Completed";
 }

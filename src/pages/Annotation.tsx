@@ -1,758 +1,315 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, AlertOctagon, Info, CheckCircle2, Bot, Circle } from "lucide-react";
+import { ArrowLeft, Ban } from "lucide-react";
 import Layout from "@/components/Layout";
-import Badge from "@/components/Badge";
 import ChatThread from "@/components/ChatThread";
-import { PanelSection, ScoreRow, Collapsible } from "@/components/ScorePanel";
+import { ScoreRow, Collapsible } from "@/components/ScorePanel";
+import Badge from "@/components/Badge";
 import { getConversation } from "@/mock/conversation";
-import { type RubricDimension } from "@/mock/settings";
-import { useCurrentUserStore, isPrivileged, isVendor } from "@/lib/currentUser";
-import { isAssignedTo } from "@/lib/access";
-import { useSessionStore } from "@/store/sessionStore";
+import { executionOptions } from "@/mock/settings";
+import type { ExpectedResult, ProblemType, ResultScore, ReviewRole } from "@/mock/types";
 import { useRubricStore } from "@/store/rubricStore";
-import { computeActorScore } from "@/lib/scoring";
-import type { ActorScore } from "@/mock/types";
+import { useSessionStore } from "@/store/sessionStore";
+import { useCurrentUserStore, isAdmin, shortNameOf } from "@/lib/currentUser";
+import { samePerson } from "@/lib/access";
+import { computeResultScore } from "@/lib/scoring";
 
-interface ActorState {
-  scores: Record<string, number>;
-  reasons: Record<string, string>;
-}
+const PROBLEM_TYPES: { value: ProblemType; label: string }[] = [
+  { value: "R1", label: "R1 Information" },
+  { value: "R2", label: "R2 Personalized Info" },
+  { value: "R3", label: "R3 Operation" },
+];
 
-const emptyActor: ActorState = { scores: {}, reasons: {} };
-
-// Responsiveness is auto-evaluated by the machine (annotators skip it).
-// Thresholds: Chatbot <=10s, Human IM <=120s, Ticket <=24hr -> 3 else 0.
-function autoResponsiveness(subtype: string, actor: "bot" | "human"): { score: number; detail: string } {
-  if (actor === "human" && subtype !== "Ticketbot") {
-    const sec = 70;
-    return { score: sec <= 120 ? 3 : 0, detail: `Human IM first response ${sec}s (threshold ≤120s)` };
-  }
-  if (subtype === "Ticketbot") {
-    const hr = 6;
-    return { score: hr <= 24 ? 3 : 0, detail: `Ticket first response ${hr}hr (threshold ≤24hr)` };
-  }
-  const sec = 4;
-  return { score: sec <= 10 ? 3 : 0, detail: `Chatbot first token ${sec}s (threshold ≤10s)` };
+// Mock auto-scored Responsiveness (system-recognized, read-only).
+function autoResponsiveness(): number {
+  return 3;
 }
 
 export default function Annotation() {
-  const { sessionId } = useParams();
+  const { sessionId = "" } = useParams();
+  const [params] = useSearchParams();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const getSession = useSessionStore((s) => s.getSession);
-  const submitAnnotation = useSessionStore((s) => s.submitAnnotation);
-  const getReviewFlow = useSessionStore((s) => s.getReviewFlow);
+  const role = (params.get("role") as ReviewRole | null) ?? "A";
+  const viewOnly = params.get("view") === "1";
+
   const currentEmail = useCurrentUserStore((s) => s.currentEmail);
+  const admin = isAdmin(currentEmail);
+  const getCaseBySession = useSessionStore((s) => s.getCaseBySession);
+  const flows = useSessionStore((s) => s.flows);
+  const submitAnnotation = useSessionStore((s) => s.submitAnnotation);
 
   const rubric = useRubricStore((s) => s.rubric);
   const weights = useRubricStore((s) => s.weights);
-  const version = useRubricStore((s) => s.version);
+  const activeRubricForVersion = useRubricStore((s) => s.activeRubricForVersion);
+  const reasonFor = useRubricStore((s) => s.reasonFor);
 
-  const session = getSession(sessionId ?? "");
-  const flow = getReviewFlow(sessionId ?? "");
-  const messages = useMemo(() => getConversation(sessionId ?? ""), [sessionId]);
-  const reviewRole = (searchParams.get("role")?.toUpperCase() as "A" | "B" | "C" | null) ?? null;
-  // Read-only view (opened without a role, e.g. clicking the session id).
-  const viewMode = searchParams.get("view") === "1" || reviewRole === null;
+  const caseRow = getCaseBySession(sessionId);
+  const flow = caseRow ? flows.find((f) => f.caseId === caseRow.caseId) : undefined;
 
-  // Prefill scores:
-  //  - View mode: show the authoritative result already on the row (read-only).
-  //  - Otherwise A / B / C annotate on a blank slate — no prefill. Even in open
-  //    review (明检), B does NOT prefill A's result: B judges from scratch (with
-  //    A shown as read-only reference) so B is not anchored to A's scores.
-  const openReview = reviewRole === "B" && flow?.bMode === "open";
-  const seedActor = useMemo<ActorState>(() => {
-    let src: ActorScore | undefined;
-    if (viewMode) {
-      src = flow?.cResult?.bot ?? flow?.bResult?.bot ?? flow?.aResult?.bot ?? session?.bot;
+  const ruleVersion = caseRow?.ruleVersion ?? 1;
+  const dims = useMemo(() => activeRubricForVersion(ruleVersion), [ruleVersion, rubric]);
+  const sqsDims = dims.filter((d) => d.group === "SQS");
+  const uefDims = dims.filter((d) => d.group === "UEF");
+
+  // Anti-self-review: editor who was A can't be B/C; who was B can't be C.
+  const selfConflict = useMemo(() => {
+    if (admin || !flow) return false;
+    const aP = flow.aResult?.by ?? flow.aAssignee;
+    const bP = flow.bResult?.by ?? flow.bAssignee;
+    if (role === "B") return samePerson(currentEmail, aP);
+    if (role === "C") return samePerson(currentEmail, aP) || samePerson(currentEmail, bP);
+    return false;
+  }, [admin, flow, role, currentEmail]);
+
+  // Per-result score state: resultId -> { scores, reasons, problemType }
+  const [state, setState] = useState<Record<string, { scores: Record<string, number>; reasons: Record<string, string>; problemType?: ProblemType }>>(() => {
+    const init: Record<string, { scores: Record<string, number>; reasons: Record<string, string>; problemType?: ProblemType }> = {};
+    for (const er of caseRow?.expectedResults ?? []) {
+      // Responsiveness auto-scored; everything else empty. A/B blind, C blank.
+      init[er.resultId] = { scores: { responsiveness: autoResponsiveness() }, reasons: {} };
     }
-    if (!src) return emptyActor;
-    return { scores: { ...src.scores }, reasons: { ...(src.reasons ?? {}) } };
-  }, [viewMode, flow, session]);
+    return init;
+  });
 
-  // Lock (read-only) rules:
-  //  - View mode is always read-only.
-  //  - A / B can keep editing their own result until the case is finalized by C;
-  //    submitting no longer freezes them (they may revise before QC定案).
-  //  - Open review (明检) exception: once B has submitted, B is the final say
-  //    (B overwrote A), so A is locked — letting A re-edit would re-introduce an
-  //    A/B mismatch that the "以 B 为准" rule is meant to avoid.
-  //  - C is never locked here (C is the reviewer who overwrites).
-  //  - 权限账号例外：即使 case 已经 QC 定案（Final Result Ready），权限账号仍然
-  //    可以回来修改 A / B / C 的结果，所以它不受 isFinal 和明检 A 锁定的限制。
-  const privileged = isPrivileged(currentEmail);
-  const isFinal = flow?.currentState === "Final Result Ready";
-  const openLockedA =
-    !privileged &&
-    reviewRole === "A" && flow?.bMode === "open" && flow?.bResultStatus === "Submitted";
-  const locked =
-    viewMode || openLockedA || (!privileged && (reviewRole === "A" || reviewRole === "B") && isFinal);
-
-  // Open review (明检) needs A's result to prefill/校正. If B opens it before A
-  // has submitted the first round, there is nothing to review — block作答 and
-  // tell B to wait for A rather than let them fill a misleading blank slate.
-  const openReviewNotReady = openReview && flow?.aResultStatus !== "Submitted";
-
-  const [infoOpen, setInfoOpen] = useState(true);
-  const [bot, setBot] = useState<ActorState>(seedActor);
-  // Re-seed the panel when the case / role / view mode changes (e.g. C opens a
-  // case whose prior A/B result should prefill). Keyed on identity — NOT on the
-  // whole flow object — so it never wipes the reviewer's in-progress edits.
-  useEffect(() => {
-    setBot(seedActor);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, reviewRole, viewMode]);
-  const [human, setHuman] = useState<ActorState>(emptyActor);
-  // Problem Type (R1 / R2 / R3) is identified manually by the annotator — the
-  // system no longer auto-fills it. Seed from the row's existing value when
-  // viewing / re-editing an already-annotated case; blank for a fresh one.
-  const [problemType, setProblemType] = useState<string>(
-    viewMode ? session?.problemType ?? "" : "",
-  );
-  useEffect(() => {
-    setProblemType(viewMode ? session?.problemType ?? "" : "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, reviewRole, viewMode]);
-  const [confirmed, setConfirmed] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"sqs" | "ues">("sqs");
-  const [activeHumanTab, setActiveHumanTab] = useState<"sqs" | "ues">("sqs");
-
-  const active = useMemo(() => rubric.filter((d) => d.enabled), [rubric]);
-  const sqsDims = active.filter((d) => d.group === "SQS");
-  const uesDims = active.filter((d) => d.group === "UES");
-
-  if (!session) {
+  if (!caseRow) {
     return (
       <Layout>
-        <div className="p-10 text-center text-subtle">Session not found.</div>
+        <div className="p-10 text-sm text-subtle">Case not found. <button className="text-brand underline" onClick={() => navigate("/home")}>Back</button></div>
       </Layout>
     );
   }
 
-  // 供应商权限隔离 —— 标注页访问校验：供应商只能打开分配给自己的 case。即使拿到
-  // 直链，未分配给自己的 case 也直接拦在门口（前端硬校验）。管理员 / QA 不受限。
-  if (isVendor(currentEmail) && !isAssignedTo(currentEmail, session, flow)) {
-    return (
-      <Layout>
-        <div className="mx-auto max-w-lg p-10 text-center">
-          <AlertOctagon className="mx-auto mb-3 h-8 w-8 text-danger" />
-          <h2 className="text-base font-semibold text-ink">无权访问该 case</h2>
-          <p className="mt-2 text-sm text-subtle">
-            这条 case 没有分配给你。为满足供应商数据隔离要求，你只能查看和标注分配给自己的 case。如需处理请联系管理员分配。
-          </p>
-          <button
-            onClick={() => navigate(-1)}
-            className="mt-4 rounded-md border border-line px-4 py-2 text-sm font-medium text-ink hover:bg-page"
-          >
-            Back
-          </button>
-        </div>
-      </Layout>
-    );
-  }
+  const readOnly = viewOnly || (flow?.qcCompleted && role !== "C") || (role !== "C" && flow?.sampledForQC && !admin);
 
-  if (openReviewNotReady) {
-    return (
-      <Layout>
-        <div className="mx-auto max-w-lg p-10 text-center">
-          <AlertOctagon className="mx-auto mb-3 h-8 w-8 text-warning" />
-          <h2 className="text-base font-semibold text-ink">等待 A 完成第一轮标注</h2>
-          <p className="mt-2 text-sm text-subtle">
-            这是明检模式，B 需要在 A 的结果上直接判定 / 校正。A 还没提交第一轮标注，暂时没有可校正的内容。请等 A 提交后再来。
-          </p>
-          <button
-            onClick={() => navigate(-1)}
-            className="mt-4 rounded-md border border-line px-4 py-2 text-sm font-medium text-ink hover:bg-page"
-          >
-            Back
-          </button>
-        </div>
-      </Layout>
-    );
-  }
+  // C reference (read-only frozen Finalized Baseline; no A/B raw diff).
+  const baseline = flow?.sampledBaseline ?? flow?.finalizedBaseline;
 
-  const isSOP = session.knowledgeSource === "SOP";
-  const showHuman = session.hasHumanTransfer ?? false;
+  const setScore = (rid: string, dimKey: string, v: number) =>
+    setState((prev) => ({
+      ...prev,
+      [rid]: {
+        ...prev[rid],
+        scores: { ...prev[rid].scores, [dimKey]: v },
+        reasons: { ...prev[rid].reasons, [dimKey]: reasonFor(dimKey, v) ?? prev[rid].reasons[dimKey] ?? "" },
+      },
+    }));
+  const setReason = (rid: string, dimKey: string, text: string) =>
+    setState((prev) => ({ ...prev, [rid]: { ...prev[rid], reasons: { ...prev[rid].reasons, [dimKey]: text } } }));
+  const setProblemType = (rid: string, pt: ProblemType) =>
+    setState((prev) => ({ ...prev, [rid]: { ...prev[rid], problemType: pt } }));
 
-  // Build a resolved-scores map (fills auto dims + gating) for one actor.
-  const resolve = (st: ActorState, actor: "bot" | "human") => {
-    const uaKey = "understanding_accuracy";
-    const gated = st.scores[uaKey] === 0; // SQS gating: UA=0 -> EC & SA forced 0
-    const resolved: Record<string, number> = {};
-    for (const d of active) {
-      if (d.auto) {
-        resolved[d.key] = d.key === "responsiveness" ? autoResponsiveness(session.serviceSubtype, actor).score : 0;
-      } else if (gated && (d.key === "execution_correctness" || d.key === "solution_adoption")) {
-        resolved[d.key] = 0;
-      } else {
-        resolved[d.key] = st.scores[d.key];
-      }
-    }
-    return { resolved, gated };
+  // Whether all cards are complete enough to submit.
+  const requiredDims = sqsDims.concat(uefDims).filter((d) => !d.auto); // responsiveness auto excluded
+
+  const cardComplete = (er: ExpectedResult): boolean => {
+    const st = state[er.resultId];
+    if (!st) return false;
+    // Solution Adoption needs a problem type first.
+    const needsPT = sqsDims.some((d) => d.key === "solution_adoption");
+    if (needsPT && !st.problemType) return false;
+    return requiredDims.every((d) => st.scores[d.key] !== undefined);
   };
 
-  // Required completion check.
-  const isComplete = (st: ActorState) => {
-    const { gated } = resolve(st, "bot");
-    for (const d of sqsDims) {
-      if (d.auto) continue;
-      if (gated && (d.key === "execution_correctness" || d.key === "solution_adoption")) continue;
-      if (isSOP && d.key === "execution_correctness") continue;
-      if (isSOP && d.key === "solution_adoption") continue;
-      if (st.scores[d.key] === undefined) return false;
+  const allComplete = caseRow.expectedResults.every(cardComplete);
+
+  const buildAndSubmit = () => {
+    const perResult: Record<string, ResultScore> = {};
+    for (const er of caseRow.expectedResults) {
+      const st = state[er.resultId];
+      perResult[er.resultId] = computeResultScore(st.scores, dims, weights, st.reasons, st.problemType);
     }
-    for (const d of uesDims) {
-      if (st.scores[d.key] === undefined) return false;
-    }
-    return true;
-  };
-
-  const toActorScore = (st: ActorState, actor: "bot" | "human"): ActorScore => {
-    const { resolved } = resolve(st, actor);
-    return computeActorScore(resolved, active, weights, st.reasons);
-  };
-
-  const botScore = toActorScore(bot, "bot");
-  const humanScore = toActorScore(human, "human");
-
-  const setBotPatch = (patch: Partial<ActorState>) => setBot((p) => ({ ...p, ...patch }));
-  const setHumanPatch = (patch: Partial<ActorState>) => setHuman((p) => ({ ...p, ...patch }));
-
-  const botComplete = isComplete(bot);
-  const humanComplete = isComplete(human);
-  // Problem Type must be picked by the annotator (except in read-only view).
-  const problemTypeFilled = viewMode || problemType !== "";
-  const requiredFilled = botComplete && (!showHuman || humanComplete) && problemTypeFilled;
-  const canSubmit = requiredFilled && confirmed && !locked;
-
-  const doSubmit = () => {
-    // Never submit in read-only view; never fall back to an implicit A role.
-    if (viewMode || reviewRole === null) return;
     try {
-      submitAnnotation(
-        session.sessionId,
-        {
-          ruleVersion: version,
-          bot: botScore,
-          human: showHuman ? humanScore : undefined,
-          problemType,
-        },
-        currentEmail,
-        reviewRole,
-      );
+      submitAnnotation(caseRow.caseId, role, perResult, ruleVersion, currentEmail);
+      navigate(`/task/${caseRow.taskId}`);
     } catch (e) {
       alert(e instanceof Error ? e.message : "提交失败");
-      return;
     }
-    if (reviewRole === "C") {
-      // Return to the owning task's Detail page (the case's C/QC row).
-      navigate(session.taskId ? `/task/${session.taskId}` : "/home");
-      return;
-    }
-    navigate(-1);
   };
+
+  // Anti-self-review block page.
+  if (selfConflict) {
+    return (
+      <Layout>
+        <div className="flex h-[70vh] flex-col items-center justify-center gap-3 text-center">
+          <Ban className="h-10 w-10 text-danger" />
+          <h2 className="text-lg font-semibold text-ink">你已标过当前 session！</h2>
+          <p className="max-w-md text-sm text-subtle">
+            防自审：你作为 {role === "C" ? "A / B" : "A"} 已经评过这条 case，不能再作为 {role} 复核。标注管理员可绕过该限制。
+          </p>
+          <button onClick={() => navigate(`/task/${caseRow.taskId}`)} className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white">Back to Detail</button>
+        </div>
+      </Layout>
+    );
+  }
+
+  const conversation = getConversation(caseRow.caseId);
 
   return (
     <Layout>
       <div className="flex items-center justify-between border-b border-line bg-white px-6 py-3">
-        <button
-          onClick={() => navigate(-1)}
-          className="flex items-center gap-1.5 text-sm font-medium text-subtle hover:text-ink"
-        >
-          <ArrowLeft className="h-4 w-4" /> Back
+        <button onClick={() => navigate(`/task/${caseRow.taskId}`)} className="flex items-center gap-1 text-xs text-subtle hover:text-ink">
+          <ArrowLeft className="h-3.5 w-3.5" /> Back
         </button>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-muted">Rubric v{version}</span>
-          {reviewRole && <Badge tone={reviewRole === "C" ? "success" : "brand"}>Role {reviewRole}</Badge>}
-          {locked && (
-            <span className="flex items-center gap-1.5 text-xs text-warning">
-              <AlertOctagon className="h-3.5 w-3.5" />
-              {viewMode
-                ? "View only"
-                : "Finalized · read-only (C has overwritten this case)"}
-            </span>
-          )}
-          {showHuman && (
-            <span className="flex items-center gap-1.5 text-xs text-success">
-              <Bot className="h-3.5 w-3.5" /> Bot to Human detected (system) · Human Result enabled
-            </span>
-          )}
+        <div className="flex items-center gap-2 text-xs">
+          <Badge tone="brand">Role {role}</Badge>
+          <span className="text-subtle">Config v{ruleVersion}</span>
+          {readOnly && <Badge tone="neutral">Read-only</Badge>}
         </div>
       </div>
 
-      <div className="flex flex-col lg:flex-row">
-        {/* Left: evidence ~60% */}
-        <div className="border-b border-line lg:w-[58%] lg:border-b-0 lg:border-r">
-          <div className="border-b border-line bg-white px-5 py-3">
-            <div className="flex items-center gap-2">
-              <h2 className="text-sm font-semibold">Evidence · Conversation</h2>
-              <Badge tone="brand">{session.serviceSubtype}</Badge>
-              <Badge tone={isSOP ? "neutral" : "brand"}>{session.knowledgeSource}</Badge>
-            </div>
-            <p className="mt-1 font-mono text-xs text-muted">{session.sessionId}</p>
+      <div className="flex min-h-[calc(100vh-6.5rem)]">
+        {/* Left 60% evidence */}
+        <div className="w-3/5 border-r border-line p-5">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink">
+            Evidence · Conversation
+            <Badge tone="neutral">{caseRow.knowledgeSource}</Badge>
+            <span className="font-mono text-xs text-muted">{caseRow.sessionId}</span>
           </div>
-          <div className="max-h-[calc(100vh-12rem)] overflow-y-auto p-5">
-            <ChatThread messages={messages} />
+          <div className="mb-3 rounded-lg border border-line bg-page px-3 py-2 text-xs text-subtle">
+            Language {caseRow.language} · Region {caseRow.regionCode} · Type {caseRow.caseType} · {caseRow.annotationCategory}
+            <span className="ml-2 text-[11px]">PII 已脱敏为占位符（[EMAIL]/[PHONE]/[ADDRESS]）</span>
           </div>
+          <ChatThread messages={conversation} />
         </div>
 
-        {/* Right: scoring panel ~40% */}
-        <div className="bg-white lg:w-[42%]">
-          {/* Score Preview (sticky) */}
-          <div className="sticky top-14 z-10 flex items-center gap-2 border-b border-line bg-white px-4 py-3">
-            <ScorePreview label="SQS" value={botScore.sqsTotal} pass={botScore.sqsPass} />
-            <ScorePreview label="UES" value={botScore.uesTotal} pass={botScore.uesPass} />
-            <ScorePreview label="User Satisfaction" value={botScore.userSatisfaction} northStar />
-          </div>
-
-          <div className="max-h-[calc(100vh-16rem)] overflow-y-auto">
-            <Collapsible title="Session Information" open={infoOpen} onToggle={() => setInfoOpen((o) => !o)}>
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                {[
-                  ["Session ID", session.sessionId],
-                  ["Task ID", session.taskId],
-                  ["Service Subtype", session.serviceSubtype],
-                  ["Knowledge Source", session.knowledgeSource],
-                  ["Language", session.language],
-                  ["Region", session.regionCode],
-                  ["Signal Priority", session.signalPriority ?? "—"],
-                ].map(([k, v]) => (
-                  <div key={k}>
-                    <dt className="text-muted">{k}</dt>
-                    <dd className="font-medium text-ink">{v}</dd>
-                  </div>
-                ))}
-              </dl>
-            </Collapsible>
-
-            {/* Problem Type is identified manually by the annotator (R1 / R2 /
-                R3), no longer auto-filled by the system. It drives the
-                Solution Adoption scoring context and is required before submit. */}
-            <div className="border-b border-line bg-white px-5 py-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-ink">Problem Type</p>
-                  <p className="mt-0.5 text-xs text-muted">
-                    Identify the resolution type — drives Solution Adoption scoring.
-                  </p>
-                </div>
-                {locked ? (
-                  <Badge tone="brand">{problemType || session.problemType || "—"}</Badge>
-                ) : (
-                  <div className="flex gap-2">
-                    {[
-                      { v: "R1 Information", label: "R1 · Information" },
-                      { v: "R2 Personalized Info", label: "R2 · Personalized" },
-                      { v: "R3 Operation", label: "R3 · Operation" },
-                    ].map((o) => (
-                      <button
-                        key={o.v}
-                        type="button"
-                        onClick={() => setProblemType(o.v)}
-                        className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
-                          problemType === o.v
-                            ? "border-brand bg-brand-light text-brand"
-                            : "border-line text-ink hover:bg-page"
-                        }`}
-                      >
-                        {o.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              {!locked && problemType === "" && (
-                <p className="mt-2 text-xs text-warning">Please select a Problem Type before submitting.</p>
-              )}
-            </div>
-
-            {/* QC reference: C annotates on a blank slate, but can see the
-                annotation result here as read-only reference. By the time a case
-                reaches QC, A and B are one agreed result (明检 overwrites A with
-                B; 盲检 only pools after A/B are reconciled equal), so we show a
-                single "A and B Result" column instead of a fake A/B diff. */}
-            {reviewRole === "C" && (flow?.aResult || flow?.bResult) && (
-              <ReferencePanel
-                a={(flow?.bResultStatus === "Submitted" ? flow?.bResult?.bot : undefined) ?? flow?.aResult?.bot}
-                aWho={
-                  flow?.bResultStatus === "Submitted"
-                    ? [flow?.aAnnotator, flow?.bAnnotator].filter(Boolean).join(" / ")
-                    : flow?.aAnnotator
-                }
-                label={flow?.bResultStatus === "Submitted" ? "A and B Result" : "A Result"}
-                sqsDims={sqsDims}
-                uesDims={uesDims}
-              />
-            )}
-
-            {/* Open review (明检): B reviews A directly. A's result is prefilled
-                into B's panel; show A here as read-only reference too. */}
-            {openReview && flow?.aResult && (
-              <ReferencePanel
-                a={flow?.aResult?.bot}
-                aWho={flow?.aAnnotator}
-                sqsDims={sqsDims}
-                uesDims={uesDims}
-              />
-            )}
-
-            {/* Bot Result */}
-            <ActorPanel
-              title={reviewRole ? `${reviewRole} Review Result` : "Bot Result"}
-              badge={reviewRole ? `${reviewRole} Review` : "SQS · UES"}
-              actor="bot"
-              state={bot}
-              onPatch={setBotPatch}
-              readOnly={locked}
-              sqsDims={sqsDims}
-              uesDims={uesDims}
-              activeTab={activeTab}
-              onTab={setActiveTab}
-              subtype={session.serviceSubtype}
-              isSOP={isSOP}
-              problemType={problemType || session.problemType}
-              signalPriority={session.signalPriority}
-            />
-
-            {/* Human Result */}
-            {showHuman && (
-              <ActorPanel
-                title="Human Result"
-                badge="Bot to Human"
-                badgeTone="success"
-                actor="human"
-                state={human}
-                onPatch={setHumanPatch}
-                sqsDims={sqsDims}
-                uesDims={uesDims}
-                activeTab={activeHumanTab}
-                onTab={setActiveHumanTab}
-                subtype={session.serviceSubtype}
-                isSOP={isSOP}
-                problemType={problemType || session.problemType}
-                signalPriority={session.signalPriority}
-              />
-            )}
-
-            {/* Submit */}
-            <div className="space-y-3 px-4 py-4">
-              <label className="flex items-start gap-2 text-xs text-subtle">
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  checked={confirmed}
-                  onChange={(e) => setConfirmed(e.target.checked)}
-                />
-                I confirm all required SQS / UES fields and reasoning are complete (二次确认).
-              </label>
-              <button
-                onClick={() => setConfirmOpen(true)}
-                disabled={!canSubmit}
-                className="flex w-full items-center justify-center gap-2 rounded-md bg-brand py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <CheckCircle2 className="h-4 w-4" /> Submit Annotation
-              </button>
-              {!requiredFilled && (
-                <p className="text-center text-xs text-warning">Fill all required SQS / UES scores first.</p>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {confirmOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={() => setConfirmOpen(false)}>
-          <div className="w-full max-w-md rounded-xl border border-line bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-base font-semibold text-ink">Submit this annotation?</h3>
-            <p className="mt-1 text-sm text-subtle">
-              Saved under rubric v{version}. A version snapshot will be recorded in the Activity Log.
+        {/* Right 40% scoring */}
+        <div className="w-2/5 overflow-y-auto bg-white">
+          <div className="sticky top-0 z-10 border-b border-line bg-white px-4 py-3">
+            <p className="text-sm font-semibold text-ink">
+              评分区（{caseRow.expectedResults.length} 张评分卡）
             </p>
-            <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg border border-line bg-page p-3 text-center text-xs">
-              <div>
-                <p className="text-muted">SQS</p>
-                <p className="font-mono text-sm font-semibold text-ink">{botScore.sqsTotal.toFixed(2)}</p>
-              </div>
-              <div>
-                <p className="text-muted">UES</p>
-                <p className="font-mono text-sm font-semibold text-ink">{botScore.uesTotal.toFixed(2)}</p>
-              </div>
-              <div>
-                <p className="text-muted">User Satisfaction</p>
-                <p className="font-mono text-sm font-semibold text-brand">{botScore.userSatisfaction.toFixed(2)}</p>
-              </div>
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                onClick={() => setConfirmOpen(false)}
-                className="rounded-md border border-line px-4 py-2 text-sm text-subtle hover:bg-page"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setConfirmOpen(false);
-                  doSubmit();
-                }}
-                className="rounded-md bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
-              >
-                Confirm Submit
-              </button>
-            </div>
+            <p className="text-xs text-subtle">
+              Chatbot / Ticketbot → AI 评分卷；Human → Human 评分卷。一次提交完成全部卡片。
+            </p>
           </div>
-        </div>
-      )}
-    </Layout>
-  );
-}
 
-function ReferencePanel({
-  a,
-  aWho,
-  label = "A Result",
-  sqsDims,
-  uesDims,
-}: {
-  a?: ActorScore;
-  aWho?: string;
-  label?: string;
-  sqsDims: RubricDimension[];
-  uesDims: RubricDimension[];
-}) {
-  const [open, setOpen] = useState(true);
-  const dims = [...sqsDims, ...uesDims];
-  const cell = (v?: number) =>
-    v === undefined ? <span className="text-muted">—</span> : <span className="font-mono">{v}</span>;
-  return (
-    <PanelSection title={`Reference: ${label}`} right={<Badge tone="neutral">QC read-only</Badge>}>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="mb-2 text-xs font-medium text-brand hover:underline"
-      >
-        {open ? "Hide" : "Show"} previous scores
-      </button>
-      {open && (
-        <div className="overflow-x-auto rounded-lg border border-line">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-line bg-page text-left text-subtle">
-                <th className="px-3 py-2 font-medium">Dimension</th>
-                <th className="px-3 py-2 font-medium">{label}{aWho ? ` · ${aWho}` : ""}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {dims.map((d) => (
-                <tr key={d.key} className="border-b border-line last:border-0">
-                  <td className="px-3 py-2 text-ink">{d.dimension}</td>
-                  <td className="px-3 py-2">{cell(a?.scores?.[d.key])}</td>
-                </tr>
-              ))}
-              <tr className="bg-page font-medium">
-                <td className="px-3 py-2 text-ink">User Satisfaction</td>
-                <td className="px-3 py-2">{cell(a?.userSatisfaction)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
-    </PanelSection>
-  );
-}
-
-function ActorPanel({
-  title,
-  badge,
-  badgeTone = "brand",
-  actor,
-  state,
-  onPatch,
-  readOnly = false,
-  sqsDims,
-  uesDims,
-  activeTab,
-  onTab,
-  subtype,
-  isSOP,
-  problemType,
-  signalPriority,
-}: {
-  title: string;
-  badge: string;
-  badgeTone?: "brand" | "success";
-  actor: "bot" | "human";
-  state: ActorState;
-  onPatch: (patch: Partial<ActorState>) => void;
-  readOnly?: boolean;
-  sqsDims: RubricDimension[];
-  uesDims: RubricDimension[];
-  activeTab: "sqs" | "ues";
-  onTab: (t: "sqs" | "ues") => void;
-  subtype: string;
-  isSOP: boolean;
-  problemType?: string;
-  signalPriority?: string;
-}) {
-  const gated = state.scores["understanding_accuracy"] === 0;
-
-  const setScore = (key: string, v: number, reason: string) =>
-    onPatch({
-      scores: { ...state.scores, [key]: v },
-      reasons: { ...state.reasons, [key]: reason },
-    });
-  const setReason = (key: string, v: string) => onPatch({ reasons: { ...state.reasons, [key]: v } });
-
-  const hint = (d: RubricDimension) => {
-    if (d.key === "solution_adoption") return `${problemType ?? "Problem"} · ${signalPriority ?? ""} · scored by R1 / R2 / R3 resolution`;
-    return d.reasons.length > 0 ? `${d.options.join(" / ")} · pick a standard reason below` : undefined;
-  };
-
-  const sqsDone = sqsDims.every((d) => {
-    if (d.auto) return true;
-    if (gated && (d.key === "execution_correctness" || d.key === "solution_adoption")) return true;
-    if (isSOP && (d.key === "execution_correctness" || d.key === "solution_adoption")) return true;
-    return state.scores[d.key] !== undefined;
-  });
-  const uesDone = uesDims.every((d) => state.scores[d.key] !== undefined);
-
-  return (
-    <PanelSection title={title} right={<Badge tone={badgeTone}>{badge}</Badge>}>
-      <div className="mb-4 border-b border-line">
-        <div className="flex items-end gap-8">
-          <DimensionTab label="SQS" active={activeTab === "sqs"} completed={sqsDone} onClick={() => onTab("sqs")} />
-          <DimensionTab label="UES" active={activeTab === "ues"} completed={uesDone} onClick={() => onTab("ues")} />
-        </div>
-      </div>
-
-      {activeTab === "sqs" ? (
-        <div>
-          {gated && (
-            <div className="mb-3 flex items-start gap-2 rounded-md border border-danger/20 bg-danger-light px-3 py-2 text-xs text-danger">
-              <AlertOctagon className="mt-0.5 h-4 w-4 shrink-0" />
-              SQS Gating: Understanding Accuracy = 0 → Execution Correctness &amp; Solution Adoption auto-set to 0 and locked.
+          {/* C reference panel: read-only frozen baseline */}
+          {role === "C" && baseline && (
+            <div className="border-b border-line bg-brand-light/40 px-4 py-3">
+              <p className="mb-2 text-xs font-semibold text-brand">冻结的 Finalized Baseline（只读参考，不展示 A/B 原始分歧）</p>
+              {caseRow.expectedResults.map((er) => {
+                const s = baseline.results[er.resultId];
+                return (
+                  <div key={er.resultId} className="mb-1 flex items-center justify-between text-xs">
+                    <span className="text-subtle">{er.resultType}</span>
+                    <span className="font-mono text-ink">
+                      {s ? `SQS ${s.sqsAvg.toFixed(2)} · UEF ${s.uefTotal.toFixed(2)} · UXS ${s.uxs.toFixed(2)}` : "—"}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           )}
-          {sqsDims.map((d) => {
-            if (d.auto) {
-              const resp = d.key === "responsiveness" ? autoResponsiveness(subtype, actor) : { score: 0, detail: "" };
-              return (
-                <div key={d.key} className="mb-4 rounded-lg border border-line bg-page p-3 opacity-90 last:mb-0">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="flex items-center gap-1.5 text-sm font-medium text-ink">
-                        {d.dimension}
-                        <Badge tone="neutral">Auto · machine</Badge>
-                      </p>
-                      <p className="text-xs text-subtle">{resp.detail} — annotators skip this dimension</p>
-                    </div>
-                    <span className="font-mono text-base font-semibold text-ink">{resp.score}</span>
-                  </div>
-                </div>
-              );
-            }
-            const isEC = d.key === "execution_correctness";
-            const isSA = d.key === "solution_adoption";
-            if (isSOP && (isEC || isSA)) {
-              return (
-                <div key={d.key} className="mb-3 rounded-md border border-line bg-page px-3 py-2 text-xs text-subtle">
-                  <Info className="mr-1 inline h-3.5 w-3.5" />
-                  {d.dimension}: SOP input missing / not ready — full SOP scoring not required in this MVP.
-                </div>
-              );
-            }
-            const locked = gated && (isEC || isSA);
+
+          {caseRow.expectedResults.map((er) => {
+            const st = state[er.resultId];
+            const sqsTotalPreview = (() => {
+              const preview = computeResultScore(st.scores, dims, weights);
+              return preview;
+            })();
             return (
-              <ScoreRow
-                key={d.key}
-                label={d.dimension}
-                hint={hint(d)}
-                options={d.options}
-                value={locked ? 0 : state.scores[d.key] ?? null}
-                onChange={(v) => setScore(d.key, v, d.reasons.find((r) => r.score === v)?.text ?? state.reasons[d.key] ?? "")}
-                disabled={locked || readOnly}
-                reason={state.reasons[d.key] ?? ""}
-                onReasonChange={(v) => setReason(d.key, v)}
-                reasonOptions={d.reasons}
-              />
+              <div key={er.resultId} className="border-b-4 border-line">
+                <div className="flex items-center justify-between bg-page px-4 py-2">
+                  <span className="text-sm font-semibold text-ink">
+                    {er.resultType} Result <span className="text-xs font-normal text-muted">· {er.formTemplate} 评分卷 · {er.entryMode}</span>
+                  </span>
+                  <span className="font-mono text-xs text-brand">
+                    SQS {sqsTotalPreview.sqsAvg.toFixed(2)} · UEF {sqsTotalPreview.uefTotal.toFixed(2)} · UXS {sqsTotalPreview.uxs.toFixed(2)}
+                  </span>
+                </div>
+
+                {/* SQS dimensions */}
+                {sqsDims.map((d) => {
+                  const isExec = d.key === "execution_correctness";
+                  const isSA = d.key === "solution_adoption";
+                  const options = isExec ? executionOptions(caseRow.knowledgeSource) : d.options;
+                  const reasonOptions = d.reasons.filter((r) => options.includes(r.score));
+                  return (
+                    <div key={d.key} className="px-4 pt-3">
+                      {isSA && (
+                        <div className="mb-2">
+                          <p className="mb-1 text-xs font-medium text-ink">Problem Type（先判定 R1/R2/R3 再打分）</p>
+                          <div className="flex gap-1">
+                            {PROBLEM_TYPES.map((pt) => (
+                              <button
+                                key={pt.value}
+                                disabled={readOnly}
+                                onClick={() => setProblemType(er.resultId, pt.value)}
+                                className={`rounded-md border px-2 py-1 text-xs ${st.problemType === pt.value ? "border-brand bg-brand text-white" : "border-line text-subtle hover:border-brand/50"} disabled:opacity-50`}
+                              >
+                                {pt.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <ScoreRow
+                        label={d.dimension}
+                        hint={
+                          isExec
+                            ? `按 Knowledge Source 联动：${caseRow.knowledgeSource === "Skill" ? "Skill 3/2/1/0" : "FAQ/SOP 3/1/0（无 2 档）"}`
+                            : isSA
+                              ? `${st.problemType ?? "R?"} · scored by R1 / R2 / R3 resolution`
+                              : undefined
+                        }
+                        options={options}
+                        value={st.scores[d.key] ?? null}
+                        onChange={(v) => setScore(er.resultId, d.key, v)}
+                        disabled={readOnly || (isSA && !st.problemType) || !!d.auto}
+                        reason={st.reasons[d.key] ?? ""}
+                        onReasonChange={(v) => setReason(er.resultId, d.key, v)}
+                        reasonOptions={reasonOptions}
+                      />
+                      {d.auto && (
+                        <p className="-mt-2 mb-2 text-[11px] text-muted">系统自动识别，只读直接给值：{st.scores[d.key] ?? "—"}</p>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* UEF dimension */}
+                <div className="px-4 pb-3">
+                  <Collapsible title="UEF · User Expectation Fulfillment" open onToggle={() => {}}>
+                    {uefDims.map((d) => (
+                      <ScoreRow
+                        key={d.key}
+                        label={d.dimension}
+                        options={d.options}
+                        value={st.scores[d.key] ?? null}
+                        onChange={(v) => setScore(er.resultId, d.key, v)}
+                        disabled={readOnly}
+                        reason={st.reasons[d.key] ?? ""}
+                        onReasonChange={(v) => setReason(er.resultId, d.key, v)}
+                        reasonOptions={d.reasons}
+                      />
+                    ))}
+                  </Collapsible>
+                </div>
+              </div>
             );
           })}
-        </div>
-      ) : (
-        <div>
-          {uesDims.map((d) => (
-            <ScoreRow
-              key={d.key}
-              label={d.dimension}
-              hint={hint(d)}
-              options={d.options}
-              value={state.scores[d.key] ?? null}
-              onChange={(v) => setScore(d.key, v, d.reasons.find((r) => r.score === v)?.text ?? state.reasons[d.key] ?? "")}
-              disabled={readOnly}
-              reason={state.reasons[d.key] ?? ""}
-              onReasonChange={(v) => setReason(d.key, v)}
-              reasonOptions={d.reasons}
-            />
-          ))}
-        </div>
-      )}
-    </PanelSection>
-  );
-}
 
-function ScorePreview({
-  label,
-  value,
-  pass,
-  northStar,
-}: {
-  label: string;
-  value: number | null;
-  pass?: boolean;
-  northStar?: boolean;
-}) {
-  return (
-    <div className={`flex flex-1 items-center justify-between rounded-lg border px-3 py-2 ${northStar ? "border-brand/40 bg-brand-light" : "border-line bg-page"}`}>
-      <span className="text-xs text-subtle">{label}</span>
-      <span className="flex items-center gap-2">
-        <span className={`font-mono text-base font-semibold ${northStar ? "text-brand" : "text-ink"}`}>
-          {value === null ? "—" : value.toFixed(2)}
-        </span>
-        {!northStar && value !== null && (
-          <Badge tone={pass ? "success" : "danger"}>{pass ? "Pass" : "Fail"}</Badge>
-        )}
-      </span>
-    </div>
-  );
-}
-
-function DimensionTab({
-  label,
-  active,
-  completed,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  completed: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex items-center gap-2 border-b-2 px-1 pb-3 text-left transition-colors ${
-        active ? "border-brand text-ink" : "border-transparent text-subtle hover:text-ink"
-      }`}
-    >
-      <span className="text-[15px] font-semibold">{label}</span>
-      <span
-        className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
-          completed ? "bg-success-light text-success" : "bg-page text-subtle"
-        }`}
-      >
-        {completed ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Circle className="h-3.5 w-3.5" />}
-        {completed ? "Done" : "Todo"}
-      </span>
-    </button>
+          {!readOnly && (
+            <div className="sticky bottom-0 flex items-center justify-between border-t border-line bg-white px-4 py-3">
+              <span className="text-xs text-subtle">
+                {allComplete ? "全部评分卡已完成，可提交" : "请完成全部评分卡（含 Problem Type）后提交"}
+              </span>
+              <button
+                disabled={!allComplete}
+                onClick={buildAndSubmit}
+                className="rounded-md bg-brand px-5 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-page disabled:text-subtle"
+              >
+                Submit {role} {role === "C" ? "QC" : "Annotation"}
+              </button>
+            </div>
+          )}
+          {readOnly && (
+            <div className="px-4 py-4 text-center text-xs text-subtle">
+              只读视图（View / 结果已冻结）。{shortNameOf(currentEmail)}
+            </div>
+          )}
+        </div>
+      </div>
+    </Layout>
   );
 }

@@ -9,15 +9,17 @@ import {
   Pin,
   ShieldCheck,
 } from "lucide-react";
-import { getUserOption, USER_OPTIONS, useCurrentUserStore } from "@/lib/currentUser";
+import { getUserOption, USER_OPTIONS, useCurrentUserStore, type UserRole } from "@/lib/currentUser";
+import { useRubricStore } from "@/store/rubricStore";
 
-const roleLabel = (role: "admin" | "vendor") => (role === "admin" ? "管理员 / QA" : "供应商");
+const roleLabel = (role: UserRole) => (role === "admin" ? "标注管理员" : "标注编辑");
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const currentEmail = useCurrentUserStore((s) => s.currentEmail);
   const setCurrentEmail = useCurrentUserStore((s) => s.setCurrentEmail);
   const currentUser = getUserOption(currentEmail);
+  const configVersion = useRubricStore((s) => s.version);
   const sidebarItems = [
     { label: "Manual Annotation", icon: Pin, active: true },
     { label: "Service", icon: Headphones },
@@ -49,7 +51,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </span>
         </div>
         <div className="flex items-center gap-4 text-xs text-subtle">
-          <span className="hidden md:inline">Config v2026.06.23</span>
+          <span className="hidden md:inline">Config v{configVersion}</span>
           <div className="flex items-center gap-2 rounded-md border border-line bg-page px-2 py-1">
             <span className="hidden text-[11px] uppercase tracking-wide md:inline">Account</span>
             <select

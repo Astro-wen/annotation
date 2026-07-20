@@ -1,13 +1,85 @@
-export interface SummaryMetrics {
-  annotatedCases: number;
-  totalCases: number;
-  sqsAvg: string;
-  uesAvg: string;
-  sqsPassRate: string;
-  qcAccuracy: string;
-  uesPassRate: string;
-  userSatisfactionAvg: string;
-  avgReviewTime: string;
+// ByteHi Manual Annotation Tool — New Rule data model (Phase 1, PRD-aligned).
+//
+// Scoring model:
+//   SQS = Service Quality Score = average of 6 SQS dimensions.
+//   UEF = User Expectation Fulfillment = 1 independent user-view dimension.
+//   UXS = User Experience Score (North Star) = SQS * 0.65 + UEF * 0.35.
+//
+// Result model:
+//   A Case is recognized into one of 8 Types on import, which produces
+//   `expectedResults`. Each result is one of three result types
+//   (Chatbot / Ticketbot / Human). The UI only uses two form templates:
+//   AI form (Chatbot + Ticketbot) and Human form (Human).
+
+export type ResultType = "Chatbot" | "Ticketbot" | "Human";
+
+export type ServiceSubtype =
+  | "CHATBOT"
+  | "TICKETBOT"
+  | "HUMAN_IM"
+  | "HUMAN_TICKET";
+
+export type EntryMode = "DIRECT" | "TRANSFERRED";
+
+export type KnowledgeSource = "Skill" | "FAQ" | "SOP";
+
+/** Problem type identified by the annotator for Solution Adoption (R1/R2/R3). */
+export type ProblemType = "R1" | "R2" | "R3";
+
+/** Scoring form template. Chatbot/Ticketbot use "AI"; Human uses "Human". */
+export type FormTemplate = "AI" | "Human";
+
+export type CaseType = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+
+/** Computed score bundle for one result (one score card). */
+export interface ResultScore {
+  /** dimensionKey -> score; rubric-version aware */
+  scores: Record<string, number>;
+  /** dimensionKey -> chosen reason text */
+  reasons?: Record<string, string>;
+  /** annotator-identified problem type for Solution Adoption */
+  problemType?: ProblemType;
+  /** average of the 6 SQS dimensions */
+  sqsAvg: number;
+  /** the single UEF dimension value */
+  uefTotal: number;
+  /** North Star = sqsAvg*0.65 + uefTotal*0.35 (normalized by weights) */
+  uxs: number;
+}
+
+/** One expected scoring result within a Case (Chatbot / Ticketbot / Human). */
+export interface ExpectedResult {
+  resultId: string;
+  resultType: ResultType;
+  serviceSubtypes: ServiceSubtype[];
+  entryMode: EntryMode;
+  formTemplate: FormTemplate;
+  /** source record ids this result is scored against */
+  coveredSourceIds: string[];
+}
+
+/** One Case row (replaces the old SessionRow). A Case may carry 1–2 results. */
+export interface CaseRow {
+  caseId: string;
+  sessionId: string;
+  taskId: string;
+  caseType: CaseType;
+  knowledgeSource: KnowledgeSource;
+  /** import fields used for Type recognition */
+  annotationCategory: string;
+  category: string;
+  mergeId: string;
+  sourceRecordIds: string[];
+  language: string;
+  regionCode: string;
+  /** system-recognized, read-only */
+  transferToHuman: boolean;
+  expectedResults: ExpectedResult[];
+  /** rubric version this case set was imported under */
+  ruleVersion: number;
+  invalid?: boolean;
+  /** case-level flow status snapshot before it was marked invalid */
+  prevStatusBeforeInvalid?: string;
 }
 
 export interface CaseSet {
@@ -15,132 +87,49 @@ export interface CaseSet {
   taskName: string;
   sampleName: string;
   source: "Import" | "ByteHi";
-  taskType: "Chatbot" | "Ticket";
-  totalCases: number;
-  annotatedCases: number;
-  progress: string;
-  sqsAvg: string;
-  sqsPassRate: string;
-  uesAvg: string;
-  userSatisfactionAvg: string;
-  qcAccuracy: string;
+  /** locked at first Batch Assign; undefined = 未分配 */
+  taskMode?: "Normal" | "Back-to-Back";
+  /** config version label this case set was imported under (e.g. "v1") */
   ruleVersion: string;
-}
-
-export type KnowledgeSource = "Skill" | "FAQ" | "SOP";
-export type ServiceSubtype = "Chatbot" | "Ticketbot";
-
-/** One graded actor's result under the new 6+1 model. */
-export interface ActorScore {
-  /** dimensionKey -> score, drives per-dimension display and is rubric-version aware */
-  scores: Record<string, number>;
-  /** dimensionKey -> chosen reason text */
-  reasons?: Record<string, string>;
-  sqsTotal: number;
-  sqsPass: boolean;
-  uesTotal: number;
-  uesPass: boolean;
-  /** North Star for this actor = sqsWeight*SQS + uesWeight*UES (0..3) */
-  userSatisfaction: number;
-}
-
-export interface SessionRow {
-  sessionId: string;
-  taskId: string;
-  language: string;
-  regionCode: string;
-  serviceSubtype: ServiceSubtype;
-  knowledgeSource: KnowledgeSource;
-  problemType?: string;
-  signalPriority?: string;
-  qaOwner?: string;
-  annotator?: string;
-
-  /** Bot result (primary) */
-  bot?: ActorScore;
-  /** Human result (only when hasHumanTransfer) */
-  human?: ActorScore;
-
-  /** rubric version this row was graded under */
-  ruleVersion?: number;
-
-  sopStatus?: string;
-  status: string;
-  latestActivityLog?: string;
-  hasHumanTransfer?: boolean;
 }
 
 export interface ConversationMessage {
   id: number;
   role: "User" | "Assistant" | "System";
   type: "manual_input" | "llm_gen" | "evidence";
+  /** already PII-masked text (placeholders like [EMAIL]) */
   text: string;
   matchedFaq?: string;
+  /** true when the text contains masked PII placeholders */
+  masked?: boolean;
 }
-
-export type ReviewState =
-  | "A Annotation"
-  | "Ready for C Sampling"
-  | "In C QC"
-  | "Final Result Ready";
 
 export type ReviewRole = "A" | "B" | "C";
 
-export interface ReviewAnnotationResult {
+/** A submitted annotation result for one Case (all its expected results). */
+export interface AnnotationResult {
   ruleVersion: number;
-  bot: ActorScore;
-  human?: ActorScore;
-  /** Problem Type (R1 / R2 / R3) identified by the annotator during annotation. */
-  problemType?: string;
+  /** resultId -> score bundle */
+  results: Record<string, ResultScore>;
 }
 
-export interface ReviewFlow {
-  sessionId: string;
-  annotationMode: "Single Annotation" | "Back-to-Back";
-  currentState: ReviewState;
-  aAssignee?: string;
-  bAssignee?: string;
-  aAnnotator?: string;
-  bAnnotator?: string;
-  cReviewer?: string;
-  backToBackEnabled?: boolean;
-  /** Second-round (B) review style. "blind" = independent double-blind (default);
-   * "open" = B sees A's result and adjusts directly (标检模式 明检). */
-  bMode?: "blind" | "open";
-  aResult?: ReviewAnnotationResult;
-  bResult?: ReviewAnnotationResult;
-  cResult?: ReviewAnnotationResult;
-  aResultStatus?: string;
-  bResultStatus?: string;
-  cResultStatus?: string;
-  /** Double-blind reconciliation status when A/B disagree:
-   * "Pending" = waiting for QA to reconcile; "Reconciled" = resolved & pooled.
-   * Undefined = no reconciliation needed (agreed, or not back-to-back). */
-  reconcileStatus?: "Pending" | "Reconciled";
-  /** Who reconciled the A/B diff (audit trail). */
-  reconciledBy?: string;
-  sampledForQC?: boolean;
-  sampleBatchLabel?: string;
-  finalResultStatus?: string;
-  /** dimension keys that C changed relative to the prior A/B result (audit trail) */
-  overwrittenDims?: string[];
-}
-
-/** A frozen scoring snapshot attached to an activity log version entry. */
+/** Immutable scoring snapshot attached to an activity log version entry. */
 export interface ScoreSnapshot {
   ruleVersion: number;
-  bot: ActorScore;
-  human?: ActorScore;
+  results: Record<string, ResultScore>;
 }
 
 export interface ActivityEntry {
-  sessionId: string;
+  caseId: string;
   at: string;
+  /** who executed the operation (may differ from the actual annotator) */
   operator: string;
+  role?: ReviewRole;
   action: string;
+  /** result_type tag for scoring/reconcile/QC/result-change records */
+  resultType?: ResultType;
   /** version number shown as V1 / V2 ... for scoring submissions */
   version?: number;
   detail?: string;
-  /** immutable scoring result at this version; clicking the version shows it */
   snapshot?: ScoreSnapshot;
 }

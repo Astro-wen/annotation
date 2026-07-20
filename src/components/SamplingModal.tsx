@@ -1,230 +1,222 @@
 import { useMemo, useState } from "react";
-import { X } from "lucide-react";
-import { useSessionStore } from "@/store/sessionStore";
+import { X, ShieldCheck } from "lucide-react";
+import { USER_OPTIONS, isAdmin } from "@/lib/currentUser";
 import type { SamplingConfig } from "@/store/sessionStore";
-import type { ReviewFlow, SessionRow } from "@/mock/types";
-import { USER_OPTIONS } from "@/lib/currentUser";
 
-/** A completed review flow together with its source session. */
-export interface QcFlowRow {
-  flow: ReviewFlow;
-  session: SessionRow | undefined;
-}
-
-/**
- * Sampling dialog for a single task. C picks how many completed cases to draw
- * into QC; confirming calls `startSampling`.
- */
 export default function SamplingModal({
-  taskId,
   taskName,
-  totalCompleted,
-  pool,
   currentEmail,
+  /** effective (non-Invalid) case count in the chosen scope */
+  effectiveOf,
+  /** already-sampled non-Invalid count in scope */
+  alreadySampledOf,
+  /** cases still poolable & assignable to the chosen C (anti-self-review applied) */
+  availableOf,
+  /** invalid count in scope (display) */
+  invalidOf,
+  /** anti-self-review excluded count for chosen C (display) */
+  excludedOf,
+  /** not-yet-finalized counts blocking Start (unsubmitted / pending diff) */
+  blockersOf,
   onClose,
-  onConfirmed,
+  onConfirm,
 }: {
-  taskId: string;
   taskName: string;
-  /** Total completed (A submitted, B too if back-to-back) cases in the task. */
-  totalCompleted: number;
-  /** Rows still available to sample (not yet sampled, not finalized). */
-  pool: QcFlowRow[];
   currentEmail: string;
+  effectiveOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
+  alreadySampledOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
+  availableOf: (scope: "all_qas" | "by_qa", qaEmail: string | undefined, cReviewer: string | undefined, override: boolean) => number;
+  invalidOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
+  excludedOf: (scope: "all_qas" | "by_qa", qaEmail: string | undefined, cReviewer: string | undefined) => number;
+  blockersOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => { unsubmitted: number; pendingDiff: number };
   onClose: () => void;
-  /** Called with the taskId after sampling succeeds (host opens the QC drawer). */
-  onConfirmed: (taskId: string) => void;
+  onConfirm: (config: SamplingConfig) => void;
 }) {
-  const startSampling = useSessionStore((s) => s.startSampling);
-  const [scope, setScope] = useState<SamplingConfig["scope"]>("all_qas");
-  const [method, setMethod] = useState<SamplingConfig["method"]>("percentage");
-  const [value, setValue] = useState(10);
-  const [qaEmail, setQaEmail] = useState("");
-  // 指派 C 复核人：抽中的这批 case 交给哪个管理员 / QA 做 QC 复核。
-  const [cReviewer, setCReviewer] = useState("");
+  const admin = isAdmin(currentEmail);
+  const [scope, setScope] = useState<"all_qas" | "by_qa">("all_qas");
+  const [qaEmail, setQaEmail] = useState<string>("");
+  const [method, setMethod] = useState<"percentage" | "absolute">("percentage");
+  const [value, setValue] = useState<number>(10);
+  const [cReviewer, setCReviewer] = useState<string>("");
+  const [override, setOverride] = useState(false);
 
-  // 候选 C：只能是管理员 / QA。防自审——把本次抽样池里作为 A / B 评注过的人排除掉，
-  // 避免自己复核自己评过的 case。
-  const cReviewerOptions = useMemo(() => {
-    const graders = new Set(
-      pool.flatMap((row) =>
-        [
-          row.flow.aAnnotator ?? row.flow.aAssignee,
-          row.flow.bAnnotator ?? row.flow.bAssignee,
-        ].filter(Boolean),
-      ),
-    );
-    return USER_OPTIONS.filter((u) => u.role === "admin" && !graders.has(u.email));
-  }, [pool]);
+  const scopeQa = scope === "by_qa" ? qaEmail || undefined : undefined;
 
-  // QAs who still have un-sampled cases in this task (as A or B reviewer).
-  const qaOptions = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          pool.flatMap((row) =>
-            [
-              row.flow.aAnnotator ?? row.flow.aAssignee,
-              row.flow.bAnnotator ?? row.flow.bAssignee,
-            ].filter(Boolean),
-          ),
-        ),
-      ) as string[],
-    [pool],
-  );
+  const effective = effectiveOf(scope, scopeQa);
+  const alreadySampled = alreadySampledOf(scope, scopeQa);
+  const available = availableOf(scope, scopeQa, cReviewer || undefined, override);
+  const invalid = invalidOf(scope, scopeQa);
+  const excluded = excludedOf(scope, scopeQa, cReviewer || undefined);
+  const blockers = blockersOf(scope, scopeQa);
+  const notFinalized = blockers.unsubmitted + blockers.pendingDiff;
 
-  const baseRows = useMemo(() => {
-    if (scope === "by_qa" && qaEmail) {
-      return pool.filter((row) => {
-        const aPerson = row.flow.aAnnotator ?? row.flow.aAssignee;
-        const bPerson = row.flow.bAnnotator ?? row.flow.bAssignee;
-        return aPerson === qaEmail || bPerson === qaEmail;
-      });
+  // Target & this-time preview.
+  const { target, thisTime } = useMemo(() => {
+    if (method === "percentage") {
+      const t = value <= 0 ? 0 : Math.ceil((effective * value) / 100);
+      return { target: t, thisTime: Math.max(0, Math.min(t - alreadySampled, available)) };
     }
-    return pool;
-  }, [pool, scope, qaEmail]);
+    return { target: alreadySampled + Math.min(value, available), thisTime: Math.max(0, Math.min(value, available)) };
+  }, [method, value, effective, alreadySampled, available]);
 
-  const sampleValue =
-    method === "percentage" ? Math.min(Math.max(value, 0), 100) : Math.max(value, 0);
-  const estimatedSamples =
-    method === "percentage"
-      ? sampleValue <= 0
-        ? 0
-        : Math.max(baseRows.length > 0 ? 1 : 0, Math.round((baseRows.length * sampleValue) / 100))
-      : Math.min(sampleValue, baseRows.length);
+  const canStart =
+    notFinalized === 0 &&
+    (scope === "all_qas" || !!qaEmail) &&
+    !!cReviewer &&
+    thisTime > 0;
+
+  const start = () => {
+    if (!canStart) return;
+    onConfirm({
+      scope,
+      qaEmail: scopeQa,
+      method,
+      value,
+      cReviewer: cReviewer || undefined,
+      override: admin || override,
+    });
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-      <div className="w-full max-w-2xl rounded-2xl border border-line bg-white shadow-xl">
+      <div className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl border border-line bg-white shadow-xl">
         <div className="flex items-center justify-between border-b border-line px-6 py-4">
-          <div>
-            <h3 className="text-xl font-semibold text-ink">Set sampling size</h3>
-            <p className="mt-1 text-sm text-subtle">
-              {taskName} · Available to sample:{" "}
-              <span className="font-semibold text-ink">{pool.length}</span> of {totalCompleted}{" "}
-              completed cases
-            </p>
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="h-5 w-5 text-brand" />
+            <h3 className="text-lg font-semibold text-ink">Set Sampling · {taskName}</h3>
           </div>
           <button onClick={onClose} className="text-subtle hover:text-ink">
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        <div className="space-y-4 px-6 py-5">
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              onClick={() => setScope("all_qas")}
-              className={`rounded-xl border px-4 py-3 text-sm font-medium ${
-                scope === "all_qas" ? "border-brand bg-brand text-white" : "border-line bg-white text-brand"
-              }`}
-            >
-              All QAs
-            </button>
-            <button
-              onClick={() => setScope("by_qa")}
-              className={`rounded-xl border px-4 py-3 text-sm font-medium ${
-                scope === "by_qa" ? "border-brand bg-brand text-white" : "border-line bg-white text-brand"
-              }`}
-            >
-              By QA
-            </button>
+        <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5 text-sm">
+          <div className="rounded-lg bg-page px-4 py-3">
+            Available to sample:{" "}
+            <span className="font-mono font-semibold text-ink">{available}</span> of{" "}
+            <span className="font-mono font-semibold text-ink">{effective}</span> effective case(s)
+            <div className="mt-1 text-xs text-subtle">
+              Invalid excluded: {invalid} · Anti-self-review excluded: {excluded}
+            </div>
           </div>
 
-          {scope === "by_qa" && (
-            <select
-              value={qaEmail}
-              onChange={(e) => setQaEmail(e.target.value)}
-              className="h-12 w-full rounded-xl border border-line bg-page px-4 text-sm text-ink outline-none focus:border-brand"
-            >
-              <option value="">Select QA</option>
-              {qaOptions.map((qa) => (
-                <option key={qa} value={qa}>
-                  {qa}
-                </option>
-              ))}
-            </select>
-          )}
-
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              onClick={() => setMethod("percentage")}
-              className={`rounded-xl border px-4 py-3 text-sm font-medium ${
-                method === "percentage" ? "border-brand bg-brand text-white" : "border-line bg-white text-brand"
-              }`}
-            >
-              Percentage (%)
-            </button>
-            <button
-              onClick={() => setMethod("absolute")}
-              className={`rounded-xl border px-4 py-3 text-sm font-medium ${
-                method === "absolute" ? "border-brand bg-brand text-white" : "border-line bg-white text-brand"
-              }`}
-            >
-              Absolute number
-            </button>
-          </div>
-
-          <div className="flex items-center gap-3 rounded-xl bg-page px-4 py-4">
-            <input
-              type="number"
-              min={1}
-              max={method === "percentage" ? 100 : undefined}
-              value={value}
-              onChange={(e) => setValue(Number(e.target.value))}
-              className="h-11 flex-1 rounded-xl border border-line bg-white px-4 text-lg font-semibold text-ink outline-none focus:border-brand"
-            />
-            <span className="text-2xl font-semibold text-subtle">
-              {method === "percentage" ? "%" : "cases"}
-            </span>
-          </div>
-
-          <p className="text-center text-base text-subtle">
-            Estimated samples: <span className="font-semibold text-brand">{estimatedSamples}</span> cases
-          </p>
-
+          {/* Scope */}
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-ink">指派 C 复核人（做 QC 的人）</label>
+            <p className="mb-1.5 font-medium text-ink">Scope</p>
+            <div className="flex gap-2">
+              {(["all_qas", "by_qa"] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setScope(s)}
+                  className={`rounded-md border px-4 py-1.5 text-sm font-medium ${
+                    scope === s ? "border-brand bg-brand text-white" : "border-line text-brand hover:bg-page"
+                  }`}
+                >
+                  {s === "all_qas" ? "All QAs" : "By QA"}
+                </button>
+              ))}
+            </div>
+            {scope === "by_qa" && (
+              <select
+                value={qaEmail}
+                onChange={(e) => setQaEmail(e.target.value)}
+                className="mt-2 h-10 w-full rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
+              >
+                <option value="">Select QA…</option>
+                {USER_OPTIONS.map((u) => (
+                  <option key={u.email} value={u.email}>
+                    {u.shortName} · {u.email}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          {/* Method */}
+          <div>
+            <p className="mb-1.5 font-medium text-ink">Method</p>
+            <div className="flex gap-2">
+              {(["percentage", "absolute"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMethod(m)}
+                  className={`rounded-md border px-4 py-1.5 text-sm font-medium ${
+                    method === m ? "border-brand bg-brand text-white" : "border-line text-brand hover:bg-page"
+                  }`}
+                >
+                  {m === "percentage" ? "Percentage (%)" : "Absolute number"}
+                </button>
+              ))}
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                type="number"
+                min={method === "percentage" ? 1 : 1}
+                max={method === "percentage" ? 100 : available}
+                value={value || ""}
+                onChange={(e) => setValue(Math.max(0, Number(e.target.value) || 0))}
+                className="h-10 w-32 rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
+              />
+              <span className="text-subtle">{method === "percentage" ? "% (1–100)" : "cases"}</span>
+            </div>
+          </div>
+
+          {/* Preview */}
+          <div className="grid grid-cols-3 gap-2 rounded-lg border border-line px-4 py-3 text-center">
+            <div>
+              <p className="text-xs text-subtle">Target</p>
+              <p className="font-mono text-lg font-semibold text-ink">{target}</p>
+            </div>
+            <div>
+              <p className="text-xs text-subtle">Already sampled</p>
+              <p className="font-mono text-lg font-semibold text-ink">{alreadySampled}</p>
+            </div>
+            <div>
+              <p className="text-xs text-subtle">This time</p>
+              <p className="font-mono text-lg font-semibold text-brand">{thisTime}</p>
+            </div>
+          </div>
+
+          {/* Assign C */}
+          <div>
+            <p className="mb-1.5 font-medium text-ink">指派 C 复核人</p>
             <select
               value={cReviewer}
               onChange={(e) => setCReviewer(e.target.value)}
-              className="h-12 w-full rounded-xl border border-line bg-page px-4 text-sm text-ink outline-none focus:border-brand"
+              className="h-10 w-full rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
             >
-              <option value="">选择 C 复核人</option>
-              {cReviewerOptions.map((u) => (
+              <option value="">Select C reviewer…</option>
+              {USER_OPTIONS.map((u) => (
                 <option key={u.email} value={u.email}>
-                  {u.label} · {u.email}
+                  {u.shortName} · {u.email}
                 </option>
               ))}
             </select>
-            <p className="mt-1 text-xs text-subtle">
-              抽中的这批 case 将指派给 TA 做 QC 复核。只列管理员 / QA，且已排除本批里作为 A / B 评注过的人（防自审）。
-            </p>
+            {admin && (
+              <label className="mt-2 flex items-center gap-2 text-xs text-subtle">
+                <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
+                管理员 Override 防自审（允许 C 曾作为 A/B）
+              </label>
+            )}
           </div>
+
+          {notFinalized > 0 && (
+            <div className="rounded-lg border border-warning/30 bg-warning-light px-3 py-2 text-xs text-[#92400E]">
+              所选范围内仍有未定稿 case，无法开始抽样：未提交 {blockers.unsubmitted} 条 · 待拉齐 {blockers.pendingDiff} 条。
+            </div>
+          )}
         </div>
 
-        <div className="flex items-center justify-end gap-4 px-6 pb-5">
-          <button onClick={onClose} className="text-sm font-medium text-brand hover:underline">
+        <div className="flex items-center justify-end gap-2 border-t border-line px-6 py-4">
+          <button onClick={onClose} className="rounded-md px-4 py-2 text-sm font-medium text-brand hover:bg-page">
             Cancel
           </button>
           <button
-            onClick={() => {
-              startSampling(
-                taskId,
-                {
-                  scope,
-                  qaEmail: scope === "by_qa" ? qaEmail : undefined,
-                  method,
-                  value: sampleValue,
-                  cReviewer,
-                },
-                currentEmail,
-              );
-              onConfirmed(taskId);
-            }}
-            disabled={estimatedSamples === 0 || (scope === "by_qa" && !qaEmail) || !cReviewer}
-            className="rounded-xl bg-brand px-5 py-3 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={start}
+            disabled={!canStart}
+            className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:bg-page disabled:text-subtle"
           >
-            Start sampling
+            Start Sampling
           </button>
         </div>
       </div>
