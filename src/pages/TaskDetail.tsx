@@ -69,7 +69,6 @@ export default function TaskDetail() {
   const [fStatus, setFStatus] = useState<(typeof PROCESS_STATUSES)[number]>("All");
   const [fAnnotator, setFAnnotator] = useState("All");
   const [sqsExpanded, setSqsExpanded] = useState(false);
-  const [uefExpanded, setUefExpanded] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchOpen, setBatchOpen] = useState(false);
@@ -126,8 +125,11 @@ export default function TaskDetail() {
       return next;
     });
 
-  const expandAll = () => setExpandedRows(new Set(taskCases.filter((c) => flowOf(c.caseId)?.mode === "Back-to-Back" || flowOf(c.caseId)?.sampledForQC).map((c) => c.caseId)));
-  const collapseAll = () => setExpandedRows(new Set());
+  const expandableIds = taskCases
+    .filter((c) => flowOf(c.caseId)?.mode === "Back-to-Back" || flowOf(c.caseId)?.sampledForQC)
+    .map((c) => c.caseId);
+  const allExpanded = expandableIds.length > 0 && expandableIds.every((id) => expandedRows.has(id));
+  const toggleExpandAll = () => setExpandedRows(allExpanded ? new Set() : new Set(expandableIds));
 
   const toggleSelect = (caseId: string) =>
     setSelected((prev) => {
@@ -201,7 +203,7 @@ export default function TaskDetail() {
   );
 
   // Colspan for dynamic dimension columns.
-  const totalCols = 9 + (sqsExpanded ? sqsDims.length : 0) + (uefExpanded ? uefDims.length : 0);
+  const totalCols = 9 + (sqsExpanded ? sqsDims.length : 0);
 
   const exportLog = (caseId: string) => {
     const logs = getLogs(caseId);
@@ -242,8 +244,7 @@ export default function TaskDetail() {
         >
           Batch Edit ({selected.size})
         </button>
-        <button onClick={expandAll} className="rounded-md border border-line px-3 py-1.5 text-ink hover:bg-page">Expand all</button>
-        <button onClick={collapseAll} className="rounded-md border border-line px-3 py-1.5 text-ink hover:bg-page">Collapse all</button>
+        <button onClick={toggleExpandAll} className="rounded-md border border-line px-3 py-1.5 text-ink hover:bg-page">{allExpanded ? "Collapse all" : "Expand all"}</button>
 
         <select value={fSubtype} onChange={(e) => setFSubtype(e.target.value)} className="h-8 rounded-md border border-line bg-white px-2 text-ink outline-none focus:border-brand">
           {["All", "CHATBOT", "TICKETBOT", "HUMAN_IM", "HUMAN_TICKET"].map((v) => <option key={v} value={v}>{v === "All" ? "Service Subtype: All" : v}</option>)}
@@ -288,12 +289,7 @@ export default function TaskDetail() {
                   SQS {sqsExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                 </button>
               </th>
-              {uefExpanded && uefDims.map((d) => <th key={d.key} className="px-2 py-3 text-[10px] font-medium">{d.dimension}</th>)}
-              <th className="px-3 py-3 font-medium">
-                <button onClick={() => setUefExpanded((v) => !v)} className="flex items-center gap-1">
-                  UEF {uefExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                </button>
-              </th>
+              <th className="px-3 py-3 font-medium">UEF</th>
               <th className="px-3 py-3 font-medium">User Experience Score</th>
               <th className="px-3 py-3 font-medium">Transfer to human?</th>
               <th className="px-3 py-3 font-medium">Assign QA</th>
@@ -332,7 +328,6 @@ export default function TaskDetail() {
                     <td className="px-3 py-3"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
                     {sqsExpanded && sqsDims.map((d) => <td key={d.key} className="px-2 py-3">{dimCells(row, eff, d.key)}</td>)}
                     <td className="px-3 py-3">{scoreCells(row, eff, "SQS")}</td>
-                    {uefExpanded && uefDims.map((d) => <td key={d.key} className="px-2 py-3">{dimCells(row, eff, d.key)}</td>)}
                     <td className="px-3 py-3">{scoreCells(row, eff, "UEF")}</td>
                     <td className="px-3 py-3">{uxsCell(row, eff)}</td>
                     <td className="px-3 py-3"><Badge tone={row.transferToHuman ? "warning" : "neutral"}>{row.transferToHuman ? "Yes" : "No"}</Badge></td>
@@ -379,7 +374,6 @@ export default function TaskDetail() {
                       <td className="px-3 py-2"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
                       {sqsExpanded && sqsDims.map((d) => <td key={d.key} className="px-2 py-2">{dimCells(row, flow?.bResult, d.key)}</td>)}
                       <td className="px-3 py-2">{scoreCells(row, flow?.bResult, "SQS")}</td>
-                      {uefExpanded && uefDims.map((d) => <td key={d.key} className="px-2 py-2">{dimCells(row, flow?.bResult, d.key)}</td>)}
                       <td className="px-3 py-2">{scoreCells(row, flow?.bResult, "UEF")}</td>
                       <td className="px-3 py-2">{uxsCell(row, flow?.bResult)}</td>
                       <td className="px-3 py-2"></td>
@@ -415,7 +409,6 @@ export default function TaskDetail() {
                       <td className="px-3 py-2"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
                       {sqsExpanded && sqsDims.map((d) => <td key={d.key} className="px-2 py-2">{dimCells(row, flow?.cResult, d.key)}</td>)}
                       <td className="px-3 py-2">{scoreCells(row, flow?.cResult, "SQS")}</td>
-                      {uefExpanded && uefDims.map((d) => <td key={d.key} className="px-2 py-2">{dimCells(row, flow?.cResult, d.key)}</td>)}
                       <td className="px-3 py-2">{scoreCells(row, flow?.cResult, "UEF")}</td>
                       <td className="px-3 py-2">{uxsCell(row, flow?.cResult)}</td>
                       <td className="px-3 py-2"></td>

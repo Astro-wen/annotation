@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Users, X, Plus, AlertCircle } from "lucide-react";
 import { USER_OPTIONS } from "@/lib/currentUser";
+import { samePerson } from "@/lib/access";
 import type { CaseType } from "@/mock/types";
 import type { DistributeConfig, QaAllocation, QaPair } from "@/store/sessionStore";
 import { ANNOTATION_CATEGORY_BY_TYPE } from "@/mock/sessions";
@@ -82,7 +83,6 @@ export default function AssignModal({
   const [normalRows, setNormalRows] = useState<QaAllocation[]>([{ name: "", quantity: 0 }]);
   const [pairRows, setPairRows] = useState<QaPair[]>([{ aName: "", bName: "", quantity: 0 }]);
   const [confirmLock, setConfirmLock] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // Effective Types for this round: selected, or All when none selected.
   const effectiveTypes = selectedTypes.size > 0 ? types.filter((t) => selectedTypes.has(t.caseType)) : types;
@@ -111,31 +111,29 @@ export default function AssignModal({
   const validate = (): string | null => {
     if (requested === 0) return "请填写要分配的 QA 与数量。";
     if (requested > totalRemaining)
-      return `本轮所选范围最多可分配 ${totalRemaining} 条，当前填写了 ${requested} 条。`;
+      return `本轮所选范围只剩 ${totalRemaining} 条可分配，当前填写了 ${requested} 条，请减少数量。`;
     if (mode === "Normal" && normalRows.filter((r) => r.name.trim() && r.quantity > 0).length === 0)
       return "请至少填写一行 QA 与数量。";
     if (mode === "Back-to-Back") {
       const rows = pairRows.filter((r) => r.quantity > 0);
-      if (rows.some((r) => !r.aName.trim() || !r.bName.trim())) return "Back-to-Back 每一行都必须同时填写 A 和 B。";
+      if (rows.some((r) => !r.aName.trim() || !r.bName.trim())) return "Back-to-Back 每一行都必须同时填写 标注员1 和 标注员2。";
+      // 防自审：同一行的两名标注员不能是同一人（任何人都不能绕过）。
+      if (rows.some((r) => samePerson(r.aName, r.bName)))
+        return "防自审：同一行的 标注员1 与 标注员2 不能是同一个人。";
     }
     return null;
   };
 
+  // Live validation: warn as the user types, and disable Confirm when invalid.
+  const liveError = validate();
+
   const submit = () => {
-    const err = validate();
-    if (err) {
-      setError(err);
-      return;
-    }
+    if (liveError) return;
     onConfirm(buildConfig());
   };
 
   const tryConfirm = () => {
-    const err = validate();
-    if (err) {
-      setError(err);
-      return;
-    }
+    if (liveError) return; // Confirm is disabled while invalid; guard anyway.
     if (!lockedMode) {
       setConfirmLock(true); // first assignment: confirm mode lock
       return;
@@ -312,10 +310,11 @@ export default function AssignModal({
             </div>
           )}
 
-          {error && (
+          {/* Live validation warning (shown once the user starts entering quantities). */}
+          {requested > 0 && liveError && (
             <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-light px-3 py-2 text-sm text-danger">
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{error}</span>
+              <span>{liveError}</span>
             </div>
           )}
         </div>
@@ -326,7 +325,8 @@ export default function AssignModal({
           </button>
           <button
             onClick={tryConfirm}
-            className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+            disabled={!!liveError}
+            className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:bg-page disabled:text-subtle"
           >
             Confirm Distribute
           </button>
