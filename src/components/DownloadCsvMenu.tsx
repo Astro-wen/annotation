@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, FileText, FileBarChart } from "lucide-react";
+import { Download, FileText, FileBarChart, Upload } from "lucide-react";
 import { Button } from "./ui";
 import {
   downloadCsv,
@@ -58,10 +58,13 @@ function mean(nums: number[]): string {
 
 export default function DownloadCsvMenu({
   taskId,
-  label = "Download CSV",
+  label = "Download / Export",
+  onExportToByteHi,
 }: {
   taskId?: string;
   label?: string;
+  /** Optional downstream "Export to ByteHi" action, folded into this menu. */
+  onExportToByteHi?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [includeHistory, setIncludeHistory] = useState(false);
@@ -343,6 +346,27 @@ export default function DownloadCsvMenu({
                 </span>
               </span>
             </button>
+
+            {onExportToByteHi && (
+              <>
+                <div className="my-1 border-t border-line" />
+                <button
+                  onClick={() => {
+                    onExportToByteHi();
+                    setOpen(false);
+                  }}
+                  className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left hover:bg-gray-50"
+                >
+                  <Upload className="mt-0.5 h-4 w-4 text-brand" />
+                  <span>
+                    <span className="block text-sm font-medium">Export to ByteHi</span>
+                    <span className="block text-xs text-subtle">
+                      下游提交动作：把当前生效结果回传 ByteHi（此处以 CSV 形式演示）
+                    </span>
+                  </span>
+                </button>
+              </>
+            )}
           </div>
         </>
       )}

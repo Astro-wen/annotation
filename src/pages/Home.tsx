@@ -296,10 +296,7 @@ export default function Home() {
                             <Button variant="ghost" icon={ShieldCheck} onClick={() => setSamplingTaskId(t.taskId)}>
                               Sampling
                             </Button>
-                            <Button variant="ghost" onClick={() => exportTaskToByteHi(t)}>
-                              Export
-                            </Button>
-                            <DownloadCsvMenu taskId={t.taskId} label="Download" />
+                            <DownloadCsvMenu taskId={t.taskId} label="Download / Export" onExportToByteHi={() => exportTaskToByteHi(t)} />
                           </div>
                         </td>
                       </tr>
