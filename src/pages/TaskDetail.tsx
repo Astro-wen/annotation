@@ -266,11 +266,11 @@ export default function TaskDetail() {
 
       {annotatorAccuracy && (
         <div className="flex flex-wrap items-center gap-4 border-b border-line bg-page px-6 py-2 text-xs">
-          <span className="font-medium text-ink">{shortNameOf(fAnnotator)} · Individual Accuracy:</span>
+          <span className="font-medium text-ink">{shortNameOf(fAnnotator)} 个人准确率：</span>
           {annotatorAccuracy.map(({ rt, acc }) => (
             <span key={rt} className="font-mono text-subtle">{rt}: <span className="text-brand">{formatAccuracy(acc)}</span></span>
           ))}
-          <span className="text-muted">（盲检下会连带看到搭档 B 行，但顶部汇总只用被筛选者自己的原始答案）</span>
+          <span className="text-muted">（双人评下会连带看到搭档一行，但顶部汇总只用被筛选者自己的原始答案）</span>
         </div>
       )}
 
@@ -342,17 +342,17 @@ export default function TaskDetail() {
                         onClick={() => setAssignModal({ caseId: row.caseId, slot: "A" })}
                         className="text-xs text-brand hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
                       >
-                        {flow?.aAssignee ? `A · ${shortNameOf(flow.aAssignee)}` : "Assign A"}
+                        {flow?.aAssignee ? shortNameOf(flow.aAssignee) : "分配标注员"}
                       </button>
                     </td>
                     <td className="px-3 py-3"><Badge tone={statusTone(status)}>{status}</Badge></td>
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1">
                         {!invalid && flow?.reconcileStatus === "Pending" && (admin || samePerson(currentEmail, flow.aResult?.by) || samePerson(currentEmail, flow.bResult?.by)) ? (
-                          <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 text-xs font-medium text-white">拉齐 Diff</button>
+                          <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 text-xs font-medium text-white">拉齐</button>
                         ) : (
                           <button onClick={() => navigate(`/annotate/${row.sessionId}?role=A`)} className="text-xs text-brand hover:underline">
-                            {flow?.aResult ? "View" : "Annotate"}
+                            {flow?.aResult ? "查看" : "标注"}
                           </button>
                         )}
                         <button onClick={() => setLogCaseId(row.caseId)} className="text-subtle hover:text-ink" title="Activity Log"><FileText className="h-4 w-4" /></button>
@@ -367,13 +367,13 @@ export default function TaskDetail() {
                     </td>
                   </tr>
 
-                  {/* B row (Back-to-Back) */}
+                  {/* Second-reviewer row (double annotation) */}
                   {expanded && isB2B && (
                     <tr key={`${row.caseId}-B`} className="border-b border-line bg-gray-100 align-top text-xs">
                       <td className="px-2 py-2"></td>
                       <td className="px-3 py-2">
-                        <span className="font-medium text-ink">B · {shortNameOf(flow?.bAssignee)}</span>
-                        <Badge tone="neutral" className="ml-1">盲检</Badge>
+                        <span className="font-medium text-ink">{shortNameOf(flow?.bAssignee)}</span>
+                        <Badge tone="neutral" className="ml-1">复评</Badge>
                       </td>
                       <td className="px-3 py-2">{subtypeCell(row)}</td>
                       <td className="px-3 py-2"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
@@ -389,26 +389,27 @@ export default function TaskDetail() {
                           onClick={() => setAssignModal({ caseId: row.caseId, slot: "B" })}
                           className="text-brand hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
                         >
-                          {flow?.bAssignee ? `B · ${shortNameOf(flow.bAssignee)}` : "Assign B"}
+                          {flow?.bAssignee ? shortNameOf(flow.bAssignee) : "分配复评"}
                         </button>
                       </td>
                       <td className="px-3 py-2"><Badge tone={statusTone(slotStatus(flow, "B"))}>{slotStatus(flow, "B")}</Badge></td>
                       <td className="px-3 py-2">
                         {flow?.reconcileStatus === "Pending" && (admin || samePerson(currentEmail, flow.aResult?.by) || samePerson(currentEmail, flow.bResult?.by)) ? (
-                          <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 font-medium text-white">拉齐 Diff</button>
+                          <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 font-medium text-white">拉齐</button>
                         ) : (
-                          <button onClick={() => navigate(`/annotate/${row.sessionId}?role=B`)} className="text-brand hover:underline">{flow?.bResult ? "View" : "Annotate"}</button>
+                          <button onClick={() => navigate(`/annotate/${row.sessionId}?role=B`)} className="text-brand hover:underline">{flow?.bResult ? "查看" : "标注"}</button>
                         )}
                       </td>
                     </tr>
                   )}
 
-                  {/* C row (QC) */}
+                  {/* Review row (抽样复核) */}
                   {expanded && flow?.sampledForQC && (
                     <tr key={`${row.caseId}-C`} className="border-b border-line bg-brand-light/40 align-top text-xs">
                       <td className="px-2 py-2"></td>
                       <td className="px-3 py-2">
-                        <span className="font-medium text-ink">C · QC · {shortNameOf(flow?.cReviewer)}</span>
+                        <span className="font-medium text-ink">{shortNameOf(flow?.cReviewer)}</span>
+                        <Badge tone="brand" className="ml-1">复核</Badge>
                       </td>
                       <td className="px-3 py-2">{subtypeCell(row)}</td>
                       <td className="px-3 py-2"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
@@ -419,15 +420,15 @@ export default function TaskDetail() {
                       <td className="px-3 py-2">{uxsCell(row, flow?.cResult)}</td>
                       <td className="px-3 py-2"></td>
                       <td className="px-3 py-2"></td>
-                      <td className="px-3 py-2"><Badge tone={flow?.qcCompleted ? "success" : "warning"}>{flow?.qcCompleted ? "QC Completed" : "Waiting for QC"}</Badge></td>
+                      <td className="px-3 py-2"><Badge tone={flow?.qcCompleted ? "success" : "warning"}>{flow?.qcCompleted ? "复核完成" : "待复核"}</Badge></td>
                       <td className="px-3 py-2">
                         {(() => {
-                          if (flow?.qcCompleted) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C&view=1`)} className="text-brand hover:underline">View QC</button>;
+                          if (flow?.qcCompleted) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C&view=1`)} className="text-brand hover:underline">查看</button>;
                           const isMyC = samePerson(currentEmail, flow?.cReviewer);
                           const selfConflict = samePerson(currentEmail, flow?.aResult?.by) || samePerson(currentEmail, flow?.bResult?.by);
-                          if (!admin && selfConflict) return <span className="text-muted">你已标过当前 session!</span>;
-                          if (admin || isMyC) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C`)} className="rounded-md bg-brand px-2 py-1 font-medium text-white">Do QC</button>;
-                          return <span className="text-muted">Waiting for C</span>;
+                          if (!admin && selfConflict) return <span className="text-muted">你已标过当前 session！</span>;
+                          if (admin || isMyC) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C`)} className="rounded-md bg-brand px-2 py-1 font-medium text-white">复核</button>;
+                          return <span className="text-muted">等待复核</span>;
                         })()}
                       </td>
                     </tr>
@@ -521,8 +522,8 @@ export default function TaskDetail() {
                   <tr key={i} className="border-b border-line">
                     <td className="py-2 font-mono text-[11px] text-muted">{l.at}</td>
                     <td className="py-2 text-ink">{shortNameOf(l.operator)}</td>
-                    <td className="py-2 text-subtle">{l.role ?? "—"}</td>
-                    <td className="py-2 text-ink">{l.action}{l.resultType ? ` · ${l.resultType}` : ""}{l.detail ? <span className="block text-[10px] text-muted">{l.detail}</span> : null}</td>
+                    <td className="py-2 text-subtle">{l.role === "A" ? "标注" : l.role === "B" ? "复评" : l.role === "C" ? "复核" : "—"}</td>
+                    <td className="py-2 text-ink">{l.action}{l.resultType ? `（${l.resultType}）` : ""}{l.detail ? <span className="block text-[10px] text-muted">{l.detail}</span> : null}</td>
                     <td className="py-2">
                       {l.version && l.snapshot ? (
                         <button onClick={() => setSnapshot({ version: l.version!, snap: l.snapshot! })} className="rounded bg-brand-light px-2 py-0.5 font-mono text-[11px] text-brand">V{l.version}</button>
@@ -587,17 +588,17 @@ function SingleAssignModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
       <div className="w-full max-w-sm rounded-xl border border-line bg-white p-5 shadow-xl">
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-base font-semibold text-ink">Assign {slot}</h3>
+          <h3 className="text-base font-semibold text-ink">{slot === "A" ? "分配标注员" : "分配复评标注员"}</h3>
           <button onClick={onClose} className="text-subtle hover:text-ink"><X className="h-5 w-5" /></button>
         </div>
         <select value={name} onChange={(e) => setName(e.target.value)} className="h-10 w-full rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white">
-          <option value="">Select QA…</option>
-          {USER_OPTIONS.map((u) => <option key={u.email} value={u.email}>{u.shortName} · {u.email}</option>)}
+          <option value="">选择标注员…</option>
+          {USER_OPTIONS.map((u) => <option key={u.email} value={u.email}>{u.label}</option>)}
         </select>
-        {name && !ok && <p className="mt-2 text-xs text-danger">防自审：{slot === "A" ? "A 不能是 B" : "B 不能是 A"} 那个人。</p>}
+        {name && !ok && <p className="mt-2 text-xs text-danger">防自审：同一条 case 的两名标注员不能是同一人。</p>}
         <div className="mt-4 flex justify-end gap-2">
-          <button onClick={onClose} className="rounded-md border border-line px-4 py-2 text-sm text-subtle hover:bg-page">Cancel</button>
-          <button disabled={!ok} onClick={() => onConfirm(name)} className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white disabled:bg-page disabled:text-subtle">Confirm</button>
+          <button onClick={onClose} className="rounded-md border border-line px-4 py-2 text-sm text-subtle hover:bg-page">取消</button>
+          <button disabled={!ok} onClick={() => onConfirm(name)} className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white disabled:bg-page disabled:text-subtle">确认</button>
         </div>
       </div>
     </div>
@@ -682,11 +683,11 @@ function ReconcileModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
       <div className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-xl border border-line bg-white shadow-xl">
         <div className="flex items-center justify-between border-b border-line px-6 py-4">
-          <h3 className="text-lg font-semibold text-ink">拉齐 A / B Diff · {caseRow.caseId}</h3>
+          <h3 className="text-lg font-semibold text-ink">拉齐分歧 · {caseRow.caseId}</h3>
           <button onClick={onClose} className="text-subtle hover:text-ink"><X className="h-5 w-5" /></button>
         </div>
         <div className="flex-1 space-y-4 overflow-y-auto px-6 py-4">
-          <p className="text-xs text-subtle">逐维展示 A、B 分歧，选择统一结论（一致维度自动沿用 A/B；可选数字或 Skip）。ruleVersion v{ruleVersion}。</p>
+          <p className="text-xs text-subtle">逐维展示两名标注员的分歧，选择统一结论（一致维度自动沿用；可选数字或 Skip）。ruleVersion v{ruleVersion}。</p>
           {caseRow.expectedResults.map((er) => {
             const aRes = flow.aResult;
             const bRes = flow.bResult;
@@ -703,10 +704,10 @@ function ReconcileModal({
                       <div key={d.key} className="flex items-center justify-between gap-3 text-xs">
                         <span className="w-40 text-ink">{d.dimension}</span>
                         {consistent ? (
-                          <span className="flex-1 text-success">一致 · {String(aVal)}</span>
+                          <span className="flex-1 text-success">一致（{String(aVal)}）</span>
                         ) : (
                           <div className="flex flex-1 flex-wrap items-center gap-1">
-                            <span className="text-muted">A={String(aVal)} · B={String(bVal)} →</span>
+                            <span className="text-muted">标注员1={String(aVal)}，标注员2={String(bVal)} →</span>
                             {d.options.map((opt) => {
                               const sel = cur === opt;
                               return (

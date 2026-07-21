@@ -61,7 +61,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             >
               {USER_OPTIONS.map((user) => (
                 <option key={user.email} value={user.email}>
-                  [{roleLabel(user.role)}] {user.label} · {user.email}
+                  {user.label}
                 </option>
               ))}
             </select>
@@ -69,7 +69,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-2">
             <ClipboardCheck className="h-4 w-4 text-brand" />
             <span className="font-medium text-ink">
-              {currentUser.shortName} · {roleLabel(currentUser.role)}
+              {currentUser.label}
             </span>
           </div>
         </div>

@@ -30,6 +30,7 @@ export default function Annotation() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const role = (params.get("role") as ReviewRole | null) ?? "A";
+  const roleLabelCN = role === "C" ? "复核" : role === "B" ? "复评" : "标注";
   const viewOnly = params.get("view") === "1";
 
   const currentEmail = useCurrentUserStore((s) => s.currentEmail);
@@ -163,9 +164,9 @@ export default function Annotation() {
           <Ban className="h-10 w-10 text-danger" />
           <h2 className="text-lg font-semibold text-ink">你已标过当前 session！</h2>
           <p className="max-w-md text-sm text-subtle">
-            防自审：你作为 {role === "C" ? "A / B" : "A"} 已经评过这条 case，不能再作为 {role} 复核。标注管理员可绕过该限制。
+            防自审：你已经评过这条 case，不能再对同一条 case 复核。标注管理员可绕过该限制。
           </p>
-          <button onClick={() => navigate(`/task/${caseRow.taskId}`)} className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white">Back to Detail</button>
+          <button onClick={() => navigate(`/task/${caseRow.taskId}`)} className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white">返回详情</button>
         </div>
       </Layout>
     );
@@ -177,12 +178,12 @@ export default function Annotation() {
     <Layout>
       <div className="flex items-center justify-between border-b border-line bg-white px-6 py-3">
         <button onClick={() => navigate(`/task/${caseRow.taskId}`)} className="flex items-center gap-1 text-xs text-subtle hover:text-ink">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back
+          <ArrowLeft className="h-3.5 w-3.5" /> 返回
         </button>
         <div className="flex items-center gap-2 text-xs">
-          <Badge tone="brand">Role {role}</Badge>
+          <Badge tone="brand">{roleLabelCN}</Badge>
           <span className="text-subtle">Config v{ruleVersion}</span>
-          {readOnly && <Badge tone="neutral">Read-only</Badge>}
+          {readOnly && <Badge tone="neutral">只读</Badge>}
         </div>
       </div>
 
@@ -215,7 +216,7 @@ export default function Annotation() {
           {/* C reference panel: read-only frozen baseline */}
           {role === "C" && baseline && (
             <div className="border-b border-line bg-brand-light/40 px-4 py-3">
-              <p className="mb-2 text-xs font-semibold text-brand">冻结的 Finalized Baseline（只读参考，不展示 A/B 原始分歧）</p>
+              <p className="mb-2 text-xs font-semibold text-brand">冻结的定稿基线（只读参考，不展示原始分歧）</p>
               {caseRow.expectedResults.map((er) => {
                 const s = baseline.results[er.resultId];
                 return (
@@ -357,13 +358,13 @@ export default function Annotation() {
                 onClick={buildAndSubmit}
                 className="rounded-md bg-brand px-5 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-page disabled:text-subtle"
               >
-                Submit {role} {role === "C" ? "QC" : "Annotation"}
+                Submit {roleLabelCN}
               </button>
             </div>
           )}
           {readOnly && (
             <div className="px-4 py-4 text-center text-xs text-subtle">
-              只读视图（View / 结果已冻结）。{shortNameOf(currentEmail)}
+              只读视图（查看 / 结果已冻结）。当前账号：{shortNameOf(currentEmail)}
             </div>
           )}
         </div>

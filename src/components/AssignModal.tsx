@@ -53,8 +53,7 @@ function QaNameInput({
               onMouseDown={() => onChange(u.email)}
               className="flex w-full items-center justify-between px-3 py-2 text-left hover:bg-page"
             >
-              <span className="text-sm font-medium text-ink">{u.shortName}</span>
-              <span className="text-xs text-muted">{u.email}</span>
+              <span className="text-sm font-medium text-ink">{u.label}</span>
             </button>
           ))}
         </div>
@@ -185,8 +184,8 @@ export default function AssignModal({
             </div>
             <p className="mt-2 text-xs text-subtle">
               {mode === "Back-to-Back"
-                ? "双人同评一条 case（盲检）：A、B 独立标注，一致进池，不一致进待拉齐。"
-                : "单人评：A 评完即定稿进 QC 抽样池。"}
+                ? "双人同评一条 case：两名标注员独立评分，一致进池，不一致进待拉齐。"
+                : "单人评：标注员评完即定稿进抽样复核池。"}
               {!lockedMode && " 首次分配将锁定该模式，之后不可切换。"}
             </p>
           </div>
@@ -273,23 +272,23 @@ export default function AssignModal({
           ) : (
             <div className="rounded-lg border border-line p-4">
               <div className="mb-3 flex items-center justify-between">
-                <span className="text-sm font-semibold text-ink">A ｜ B ｜ Quantity</span>
+                <span className="text-sm font-semibold text-ink">标注员1 ｜ 标注员2 ｜ Quantity</span>
                 <span className="text-xs text-subtle">
                   Remaining unassigned: <span className="font-mono font-semibold text-ink">{Math.max(0, totalRemaining - requested)}</span>
                 </span>
               </div>
               <div className="mb-2 flex gap-3 text-xs font-medium uppercase tracking-wide text-subtle">
-                <span className="flex-1">A Annotator</span>
-                <span className="flex-1">B Annotator</span>
+                <span className="flex-1">标注员1</span>
+                <span className="flex-1">标注员2</span>
                 <span className="w-24">Quantity</span>
               </div>
               {pairRows.map((row, i) => (
                 <div key={i} className="mb-2 flex items-start gap-3">
                   <div className="flex-1">
-                    <QaNameInput value={row.aName} placeholder="A name / email" onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, aName: v } : r)))} />
+                    <QaNameInput value={row.aName} placeholder="标注员1 姓名" onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, aName: v } : r)))} />
                   </div>
                   <div className="flex-1">
-                    <QaNameInput value={row.bName} placeholder="B name / email" onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, bName: v } : r)))} />
+                    <QaNameInput value={row.bName} placeholder="标注员2 姓名" onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, bName: v } : r)))} />
                   </div>
                   <input
                     type="number"

@@ -21,33 +21,27 @@ export interface UserOption {
 
 export const USER_OPTIONS: UserOption[] = [
   {
-    email: "editor.aaron@bytedance.com",
-    label: "Aaron（标注编辑）",
-    shortName: "Aaron",
+    email: "editor.a@bytedance.com",
+    label: "标注员A",
+    shortName: "标注员A",
     role: "editor",
   },
   {
-    email: "editor.usagi@bytedance.com",
-    label: "乌萨奇（标注编辑）",
-    shortName: "Usagi",
+    email: "editor.b@bytedance.com",
+    label: "标注员B",
+    shortName: "标注员B",
     role: "editor",
   },
   {
-    email: "editor.hachi@bytedance.com",
-    label: "小八（标注编辑）",
-    shortName: "Hachi",
-    role: "editor",
-  },
-  {
-    email: "editor.chiikawa@bytedance.com",
-    label: "吉伊（标注编辑）",
-    shortName: "Chiikawa",
+    email: "editor.c@bytedance.com",
+    label: "标注员C",
+    shortName: "标注员C",
     role: "editor",
   },
   {
     email: "admin.lead@bytedance.com",
-    label: "QA 组长（标注管理员）",
-    shortName: "Admin",
+    label: "标注管理员",
+    shortName: "标注管理员",
     role: "admin",
   },
 ];

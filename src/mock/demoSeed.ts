@@ -19,16 +19,16 @@ import type { ActivityEntry } from "@/mock/types";
 import { defaultWeights } from "@/mock/settings";
 
 export const DEMO_TASK_ID = "TASK-DEMO-001";
-export const DEMO_TASK_NAME = "Demo Sample · Normal 全场景";
+export const DEMO_TASK_NAME = "Demo Sample 单人评";
 export const DEMO_B2B_TASK_ID = "TASK-DEMO-002";
-export const DEMO_B2B_TASK_NAME = "Demo Sample · Back-to-Back 全场景";
+export const DEMO_B2B_TASK_NAME = "Demo Sample 双人评";
 
-// Demo annotator identities (from currentUser USER_OPTIONS).
+// Demo annotator identities (from currentUser USER_OPTIONS): 标注员A/B/C + 管理员.
 export const DEMO = {
-  aaron: "editor.aaron@bytedance.com",
-  usagi: "editor.usagi@bytedance.com",
-  hachi: "editor.hachi@bytedance.com",
-  chiikawa: "editor.chiikawa@bytedance.com",
+  aaron: "editor.a@bytedance.com",
+  usagi: "editor.b@bytedance.com",
+  hachi: "editor.c@bytedance.com",
+  chiikawa: "admin.lead@bytedance.com",
   admin: "admin.lead@bytedance.com",
 };
 

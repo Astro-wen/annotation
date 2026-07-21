@@ -125,7 +125,7 @@ export default function SamplingModal({
                 <option value="">Select QA…</option>
                 {USER_OPTIONS.map((u) => (
                   <option key={u.email} value={u.email}>
-                    {u.shortName} · {u.email}
+                    {u.label}
                   </option>
                 ))}
               </select>
@@ -179,23 +179,23 @@ export default function SamplingModal({
 
           {/* Assign C */}
           <div>
-            <p className="mb-1.5 font-medium text-ink">指派 C 复核人</p>
+            <p className="mb-1.5 font-medium text-ink">指派复核人</p>
             <select
               value={cReviewer}
               onChange={(e) => setCReviewer(e.target.value)}
               className="h-10 w-full rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
             >
-              <option value="">Select C reviewer…</option>
+              <option value="">选择复核人…</option>
               {USER_OPTIONS.map((u) => (
                 <option key={u.email} value={u.email}>
-                  {u.shortName} · {u.email}
+                  {u.label}
                 </option>
               ))}
             </select>
             {admin && (
               <label className="mt-2 flex items-center gap-2 text-xs text-subtle">
                 <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
-                管理员 Override 防自审（允许 C 曾作为 A/B）
+                管理员 Override 防自审（允许复核人曾参与该 case 标注）
               </label>
             )}
           </div>
