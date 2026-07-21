@@ -5,7 +5,6 @@ import type {
   CaseType,
   ProblemType,
   ResultScore,
-  ResultType,
   ReviewRole,
 } from "@/mock/types";
 import { cases as defaultCases } from "@/mock/sessions";
@@ -676,8 +675,6 @@ export const useSessionStore = create<SessionStore>((set, get) => {
 });
 
 // ---- Aggregation selectors (pure, used by Home / TaskDetail) ----------------
-
-export const RESULT_TYPES: ResultType[] = ["Chatbot", "Ticketbot", "Human"];
 
 /** The current-effective result bundle for a case (C > finalized baseline). */
 export function effectiveRound(flow?: CaseFlow): RoundResult | undefined {

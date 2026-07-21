@@ -13,6 +13,14 @@
 
 export type ResultType = "Chatbot" | "Ticketbot" | "Human";
 
+/**
+ * Result group for aggregation / display (PRD: 四组结果, Human IM 与 Human Ticket
+ * 不合并). Derived from resultType + service subtype.
+ */
+export type ResultGroup = "Chatbot" | "Ticketbot" | "Human IM" | "Human Ticket";
+
+export const RESULT_GROUPS: ResultGroup[] = ["Chatbot", "Ticketbot", "Human IM", "Human Ticket"];
+
 export type ServiceSubtype =
   | "CHATBOT"
   | "TICKETBOT"
@@ -58,6 +66,17 @@ export interface ExpectedResult {
   formTemplate: FormTemplate;
   /** source record ids this result is scored against */
   coveredSourceIds: string[];
+}
+
+/**
+ * Map an expected result to its result group (four groups; Human IM and Human
+ * Ticket are kept separate per PRD). Chatbot/Ticketbot come from resultType;
+ * a Human result is split by its service subtype.
+ */
+export function resultGroupOf(er: ExpectedResult): ResultGroup {
+  if (er.resultType === "Chatbot") return "Chatbot";
+  if (er.resultType === "Ticketbot") return "Ticketbot";
+  return er.serviceSubtypes.includes("HUMAN_TICKET") ? "Human Ticket" : "Human IM";
 }
 
 /** One Case row (replaces the old SessionRow). A Case may carry 1–2 results. */

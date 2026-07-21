@@ -12,14 +12,13 @@ import {
   useSessionStore,
   effectiveRound,
   caseStatus,
-  RESULT_TYPES,
   type CaseFlow,
   type RoundResult,
 } from "@/store/sessionStore";
 import { useRubricStore } from "@/store/rubricStore";
 import { qcAccuracy, formatAccuracy, type AccuracyPair } from "@/lib/scoring";
 import { assertNoPII } from "@/lib/pii";
-import type { CaseRow, ResultType } from "@/mock/types";
+import { type CaseRow, type ResultGroup, RESULT_GROUPS, resultGroupOf } from "@/mock/types";
 
 type CaseWithFlow = { row: CaseRow; flow?: CaseFlow };
 
@@ -28,8 +27,8 @@ function qcBaseline(flow: CaseFlow): RoundResult | undefined {
   return flow.sampledBaseline ?? flow.finalizedBaseline;
 }
 
-/** QC accuracy pairs for one result_type over QC-completed, non-invalid cases. */
-function qcPairsForType(rows: CaseWithFlow[], rt: ResultType): AccuracyPair[] {
+/** QC accuracy pairs for one result group over QC-completed, non-invalid cases. */
+function qcPairsForType(rows: CaseWithFlow[], rt: ResultGroup): AccuracyPair[] {
   const pairs: AccuracyPair[] = [];
   for (const { row, flow } of rows) {
     if (row.invalid || !flow || !flow.qcCompleted) continue;
@@ -37,7 +36,7 @@ function qcPairsForType(rows: CaseWithFlow[], rt: ResultType): AccuracyPair[] {
     const current = flow.currentResult;
     if (!baseline || !current) continue;
     for (const er of row.expectedResults) {
-      if (er.resultType !== rt) continue;
+      if (resultGroupOf(er) !== rt) continue;
       const b = baseline.results[er.resultId];
       const c = current.results[er.resultId];
       if (!b || !c) continue;
@@ -78,7 +77,7 @@ export default function DownloadCsvMenu({
 
   const downloadSummary = () => {
     const headers = [
-      "result_type",
+      "result_group",
       "total_samples",
       "invalid_count",
       "annotated_count",
@@ -100,7 +99,7 @@ export default function DownloadCsvMenu({
     ];
 
     const rows: string[][] = [];
-    for (const rt of RESULT_TYPES) {
+    for (const rt of RESULT_GROUPS) {
       let total = 0;
       let invalid = 0;
       const sqs: number[] = [];
@@ -112,7 +111,7 @@ export default function DownloadCsvMenu({
       for (const { row, flow } of scoped) {
         const eff = row.invalid ? undefined : effectiveRound(flow);
         for (const er of row.expectedResults) {
-          if (er.resultType !== rt) continue;
+          if (resultGroupOf(er) !== rt) continue;
           total += 1;
           if (row.invalid) {
             invalid += 1;
@@ -174,6 +173,7 @@ export default function DownloadCsvMenu({
       "case_id",
       "result_id",
       "result_type",
+      "result_group",
       "service_subtypes",
       "entry_mode",
       "covered_source_ids",
@@ -221,6 +221,7 @@ export default function DownloadCsvMenu({
           assertNoPII(row.caseId),
           assertNoPII(er.resultId),
           er.resultType,
+          resultGroupOf(er),
           assertNoPII(er.serviceSubtypes.join("|")),
           er.entryMode,
           assertNoPII(er.coveredSourceIds.join("|")),

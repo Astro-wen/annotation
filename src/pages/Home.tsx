@@ -22,7 +22,7 @@ import {
 } from "@/store/sessionStore";
 import { useCurrentUserStore } from "@/lib/currentUser";
 import { samePerson } from "@/lib/access";
-import { computeTaskStats, fmt, RESULT_TYPES } from "@/lib/aggregate";
+import { computeTaskStats, fmt, RESULT_GROUPS } from "@/lib/aggregate";
 import { formatAccuracy } from "@/lib/scoring";
 import { useRubricStore } from "@/store/rubricStore";
 
@@ -178,8 +178,11 @@ export default function Home() {
           </div>
         ) : (
           <div className="overflow-hidden rounded-xl border border-line bg-white">
+            <div className="flex items-center justify-between border-b border-line bg-page px-3 py-1.5 text-[11px] text-muted md:hidden">
+              <span>← 左右拖动查看全部列 →</span>
+            </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[1080px] text-sm">
                 <thead>
                   <tr className="border-b border-line bg-page text-left text-xs uppercase tracking-wide text-subtle">
                     <th className="px-3 py-3 font-medium">Source</th>
@@ -190,7 +193,7 @@ export default function Home() {
                     <th className="px-3 py-3 font-medium">Annotation Finish Rate</th>
                     <th className="px-3 py-3 font-medium">Back-to-Back Complete Rate</th>
                     <th className="px-3 py-3 font-medium">QC Complete</th>
-                    <th className="px-3 py-3 font-medium">SQS / UEF / UXS · QC Acc（按结果类型）</th>
+                    <th className="px-3 py-3 font-medium">SQS / UEF / UXS · QC Acc（按结果组）</th>
                     <th className="px-3 py-3 font-medium">Actions</th>
                   </tr>
                 </thead>
@@ -267,11 +270,11 @@ export default function Home() {
                               </tr>
                             </thead>
                             <tbody className="font-mono">
-                              {RESULT_TYPES.map((rt) => {
+                              {RESULT_GROUPS.map((rt) => {
                                 const m = stats.byType[rt];
                                 return (
                                   <tr key={rt}>
-                                    <td className="pr-2 text-[9px] uppercase text-muted">{rt}</td>
+                                    <td className="pr-2 whitespace-nowrap text-[9px] uppercase text-muted">{rt}</td>
                                     <td className="px-1 text-center text-ink">{m.sqsAvg === null ? "—" : fmt(m.sqsAvg)}</td>
                                     <td className="px-1 text-center text-ink">{m.uefAvg === null ? "—" : fmt(m.uefAvg)}</td>
                                     <td className="px-1 text-center text-ink">{m.uxsAvg === null ? "—" : fmt(m.uxsAvg)}</td>

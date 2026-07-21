@@ -7,7 +7,7 @@ import { ScoreRow, Collapsible } from "@/components/ScorePanel";
 import Badge from "@/components/Badge";
 import { getConversation } from "@/mock/conversation";
 import { executionOptions } from "@/mock/settings";
-import type { ExpectedResult, ProblemType, ResultScore, ReviewRole } from "@/mock/types";
+import { type ExpectedResult, type ProblemType, type ResultScore, type ReviewRole, resultGroupOf } from "@/mock/types";
 import { useRubricStore } from "@/store/rubricStore";
 import { useSessionStore } from "@/store/sessionStore";
 import { useCurrentUserStore, isAdmin, shortNameOf } from "@/lib/currentUser";
@@ -221,7 +221,7 @@ export default function Annotation() {
                 const s = baseline.results[er.resultId];
                 return (
                   <div key={er.resultId} className="mb-1 flex items-center justify-between text-xs">
-                    <span className="text-subtle">{er.resultType}</span>
+                    <span className="text-subtle">{resultGroupOf(er)}</span>
                     <span className="font-mono text-ink">
                       {s ? `SQS ${s.sqsAvg.toFixed(2)} · UEF ${s.uefTotal.toFixed(2)} · UXS ${s.uxs.toFixed(2)}` : "—"}
                     </span>
@@ -241,7 +241,7 @@ export default function Annotation() {
               <div key={er.resultId} className="border-b-4 border-line">
                 <div className="flex items-center justify-between bg-page px-4 py-2">
                   <span className="text-sm font-semibold text-ink">
-                    {er.resultType} Result <span className="text-xs font-normal text-muted">· {er.formTemplate} 评分卷 · {er.entryMode}</span>
+                    {resultGroupOf(er)} Result <span className="text-xs font-normal text-muted">· {er.formTemplate} 评分卷 · {er.entryMode}</span>
                   </span>
                   <span className="font-mono text-xs text-brand">
                     SQS {sqsTotalPreview.sqsAvg.toFixed(2)} · UEF {sqsTotalPreview.uefTotal.toFixed(2)} · UXS {sqsTotalPreview.uxs.toFixed(2)}

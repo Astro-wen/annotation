@@ -18,7 +18,7 @@ import { USER_OPTIONS, useCurrentUserStore, isAdmin, shortNameOf } from "@/lib/c
 import { canToggleInvalid, passesAntiSelfReview, samePerson } from "@/lib/access";
 import { downloadCsv } from "@/lib/csv";
 import { caseSets } from "@/mock/caseSets";
-import type { CaseRow, ProblemType, ScoreSnapshot } from "@/mock/types";
+import { type CaseRow, type ProblemType, type ScoreSnapshot, resultGroupOf } from "@/mock/types";
 import { useRubricStore } from "@/store/rubricStore";
 import {
   useSessionStore,
@@ -28,7 +28,7 @@ import {
   effectiveRound,
   slotStatus,
 } from "@/store/sessionStore";
-import { RESULT_TYPES, individualMetricsForType } from "@/lib/aggregate";
+import { RESULT_GROUPS, individualMetricsForType } from "@/lib/aggregate";
 import { formatAccuracy } from "@/lib/scoring";
 
 const PROCESS_STATUSES = [
@@ -137,9 +137,9 @@ export default function TaskDetail() {
       return next;
     });
 
-  // Per-annotator accuracy readout (three result types) when filtered by a person.
+  // Per-annotator accuracy readout (four result groups) when filtered by a person.
   const annotatorAccuracy = fAnnotator !== "All"
-    ? RESULT_TYPES.map((rt) => ({
+    ? RESULT_GROUPS.map((rt) => ({
         rt,
         acc: individualMetricsForType(taskCases.map((row) => ({ row, flow: flowOf(row.caseId) })), rt, fAnnotator).qcAccuracy,
       }))
@@ -155,7 +155,7 @@ export default function TaskDetail() {
           const val = !s ? "—" : group === "SQS" ? s.sqsAvg.toFixed(2) : s.uefTotal.toFixed(2);
           return (
             <div key={er.resultId} className="flex items-center gap-1 font-mono text-xs">
-              <span className="w-16 text-[10px] uppercase text-muted">{er.resultType}</span>
+              <span className="w-20 text-[10px] uppercase text-muted">{resultGroupOf(er)}</span>
               <span className="text-ink">{val}</span>
             </div>
           );
@@ -693,7 +693,7 @@ function ReconcileModal({
             const bRes = flow.bResult;
             return (
               <div key={er.resultId} className="rounded-lg border border-line p-3">
-                <p className="mb-2 text-sm font-semibold text-ink">{er.resultType} <span className="font-mono text-xs text-muted">{er.resultId}</span></p>
+                <p className="mb-2 text-sm font-semibold text-ink">{resultGroupOf(er)} <span className="font-mono text-xs text-muted">{er.resultId}</span></p>
                 <div className="space-y-2">
                   {dims.map((d) => {
                     const aVal = fmtSide(aRes, er.resultId, d.key);

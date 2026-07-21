@@ -1,4 +1,4 @@
-import type { CaseRow, ResultType } from "@/mock/types";
+import { type CaseRow, type ResultGroup, RESULT_GROUPS, resultGroupOf } from "@/mock/types";
 import {
   type CaseFlow,
   type RoundResult,
@@ -9,7 +9,7 @@ import {
 import { qcAccuracy, type AccuracyPair } from "@/lib/scoring";
 import { samePerson } from "@/lib/access";
 
-export const RESULT_TYPES: ResultType[] = ["Chatbot", "Ticketbot", "Human"];
+export { RESULT_GROUPS };
 
 function mean(nums: number[]): number | null {
   if (nums.length === 0) return null;
@@ -20,7 +20,7 @@ export function fmt(v: number | null): string {
   return v === null ? "—" : v.toFixed(2);
 }
 
-/** Per result-type aggregate metrics for a set of (case, flow) pairs. */
+/** Per result-group aggregate metrics for a set of (case, flow) pairs. */
 export interface ResultTypeMetrics {
   sqsAvg: number | null;
   uefAvg: number | null;
@@ -31,7 +31,7 @@ export interface ResultTypeMetrics {
 /** Collect the effective per-result score entries for one result type. */
 function effectiveEntriesForType(
   rows: { row: CaseRow; flow?: CaseFlow }[],
-  rt: ResultType,
+  rt: ResultGroup,
 ) {
   const out: { sqsAvg: number; uefTotal: number; uxs: number }[] = [];
   for (const { row, flow } of rows) {
@@ -39,7 +39,7 @@ function effectiveEntriesForType(
     const eff = effectiveRound(flow);
     if (!eff) continue;
     for (const er of row.expectedResults) {
-      if (er.resultType !== rt) continue;
+      if (resultGroupOf(er) !== rt) continue;
       const s = eff.results[er.resultId];
       if (!s) continue;
       out.push({ sqsAvg: s.sqsAvg, uefTotal: s.uefTotal, uxs: s.uxs });
@@ -51,7 +51,7 @@ function effectiveEntriesForType(
 /** QC accuracy pairs (baseline vs current) per result type for finalized cases. */
 function qcPairsForType(
   rows: { row: CaseRow; flow?: CaseFlow }[],
-  rt: ResultType,
+  rt: ResultGroup,
   baselineOf: (flow: CaseFlow) => RoundResult | undefined,
 ): AccuracyPair[] {
   const pairs: AccuracyPair[] = [];
@@ -61,7 +61,7 @@ function qcPairsForType(
     const current = flow.currentResult;
     if (!baseline || !current) continue;
     for (const er of row.expectedResults) {
-      if (er.resultType !== rt) continue;
+      if (resultGroupOf(er) !== rt) continue;
       const b = baseline.results[er.resultId];
       const c = current.results[er.resultId];
       if (!b || !c) continue;
@@ -78,7 +78,7 @@ function qcPairsForType(
 
 export function metricsForType(
   rows: { row: CaseRow; flow?: CaseFlow }[],
-  rt: ResultType,
+  rt: ResultGroup,
 ): ResultTypeMetrics {
   const entries = effectiveEntriesForType(rows, rt);
   const pairs = qcPairsForType(rows, rt, (f) => f.sampledBaseline ?? f.finalizedBaseline);
@@ -93,7 +93,7 @@ export function metricsForType(
 /** Individual accuracy: compare a person's FIRST submission vs current-effective. */
 export function individualMetricsForType(
   rows: { row: CaseRow; flow?: CaseFlow }[],
-  rt: ResultType,
+  rt: ResultGroup,
   email: string,
 ): ResultTypeMetrics {
   const pairs: AccuracyPair[] = [];
@@ -111,7 +111,7 @@ export function individualMetricsForType(
     const current = flow.currentResult;
     if (!mine || !current) continue;
     for (const er of row.expectedResults) {
-      if (er.resultType !== rt) continue;
+      if (resultGroupOf(er) !== rt) continue;
       const b = mine.results[er.resultId];
       const c = current.results[er.resultId];
       if (!b || !c) continue;
@@ -136,7 +136,7 @@ export interface TaskStats {
   bTotal: number; // B2B non-invalid case count
   qcDone: number;
   qcSampled: number;
-  byType: Record<ResultType, ResultTypeMetrics>;
+  byType: Record<ResultGroup, ResultTypeMetrics>;
 }
 
 /** Whether every expected result for a case has been scored in a round. */
@@ -166,8 +166,8 @@ export function computeTaskStats(
   const qcDone = valid.filter(({ flow }) => flow?.qcCompleted).length;
 
   const byType = Object.fromEntries(
-    RESULT_TYPES.map((rt) => [rt, metricsForType(valid, rt)]),
-  ) as Record<ResultType, ResultTypeMetrics>;
+    RESULT_GROUPS.map((rt) => [rt, metricsForType(valid, rt)]),
+  ) as Record<ResultGroup, ResultTypeMetrics>;
 
   return {
     effective: valid.length,

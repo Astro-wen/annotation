@@ -94,6 +94,8 @@ function expected(caseType: CaseType, caseId: string): ExpectedResult[] {
       return [mk(1, "Chatbot", ["CHATBOT"], "DIRECT"), mk(2, "Ticketbot", ["TICKETBOT"], "TRANSFERRED")];
     case 4:
       return [mk(1, "Chatbot", ["CHATBOT"], "DIRECT"), mk(2, "Human", ["HUMAN_IM"], "TRANSFERRED")];
+    case 5:
+      return [mk(1, "Ticketbot", ["TICKETBOT"], "DIRECT"), mk(2, "Human", ["HUMAN_TICKET"], "TRANSFERRED")];
     case 6:
       return [mk(1, "Human", ["HUMAN_IM"], "DIRECT")];
     default:
@@ -120,7 +122,7 @@ const SPECS: DemoCaseSpec[] = [
   { idx: 5, task: N, caseType: 1, knowledgeSource: "FAQ", scenario: "Normal · Assigned（未评）" },
   { idx: 6, task: N, caseType: 1, knowledgeSource: "Skill", scenario: "Unassigned" },
   { idx: 7, task: N, caseType: 2, knowledgeSource: "Skill", scenario: "Type2 多结果 · QC Completed（含 Skip）" },
-  { idx: 8, task: N, caseType: 4, knowledgeSource: "FAQ", scenario: "AI 转人工 · Waiting for QC" },
+  { idx: 8, task: N, caseType: 5, knowledgeSource: "FAQ", scenario: "Ticket 转人工 · 待复核（Human Ticket）" },
   { idx: 12, task: N, caseType: 1, knowledgeSource: "SOP", scenario: "Invalid（整行置灰）" },
   { idx: 9, task: B, caseType: 1, knowledgeSource: "Skill", scenario: "Back-to-Back · 一致 → Waiting for QC" },
   { idx: 10, task: B, caseType: 1, knowledgeSource: "FAQ", scenario: "Back-to-Back · 待拉齐（Diff）" },
