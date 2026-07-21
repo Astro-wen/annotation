@@ -330,7 +330,8 @@ export default function Home() {
 
       {samplingTaskId && (() => {
         const meta = caseSets.find((t) => t.taskId === samplingTaskId)!;
-        const isFinalized = (f?: CaseFlow) => !!f?.finalizedBaseline;
+        // Assignment-ready: Normal needs A; Back-to-Back needs A & B (QC starts after assignment).
+        const ready = (f?: CaseFlow) => !!f?.aAssignee && (f.mode !== "Back-to-Back" || !!f.bAssignee);
         const effectiveOf = (scope: "all_qas" | "by_qa", qa?: string) => scopeRows(samplingTaskId, scope, qa).length;
         const alreadySampledOf = (scope: "all_qas" | "by_qa", qa?: string) =>
           scopeRows(samplingTaskId, scope, qa).filter(({ flow }) => flow?.sampledForQC).length;
@@ -344,31 +345,27 @@ export default function Home() {
             }
             return true;
           }).length;
+        const unassignedOf = (scope: "all_qas" | "by_qa", qa?: string) =>
+          scopeRows(samplingTaskId, scope, qa).filter(({ flow }) => !ready(flow)).length;
         const excludedOf = (scope: "all_qas" | "by_qa", qa: string | undefined, c: string | undefined) => {
           if (!c) return 0;
           return scopeRows(samplingTaskId, scope, qa).filter(({ flow }) => {
-            if (!isFinalized(flow) || flow?.sampledForQC) return false;
+            if (!ready(flow) || flow?.sampledForQC) return false;
             const aP = flow?.aResult?.by ?? flow?.aAssignee;
             const bP = flow?.bResult?.by ?? flow?.bAssignee;
             return samePerson(c, aP) || samePerson(c, bP);
           }).length;
         };
-        const availableOf = (scope: "all_qas" | "by_qa", qa: string | undefined, c: string | undefined, override: boolean) =>
+        const availableOf = (scope: "all_qas" | "by_qa", qa: string | undefined, c: string | undefined) =>
           scopeRows(samplingTaskId, scope, qa).filter(({ flow }) => {
-            if (!isFinalized(flow) || flow?.sampledForQC) return false;
-            if (c && !override) {
+            if (!ready(flow) || flow?.sampledForQC) return false;
+            if (c) {
               const aP = flow?.aResult?.by ?? flow?.aAssignee;
               const bP = flow?.bResult?.by ?? flow?.bAssignee;
               if (samePerson(c, aP) || samePerson(c, bP)) return false;
             }
             return true;
           }).length;
-        const blockersOf = (scope: "all_qas" | "by_qa", qa?: string) => {
-          const rows = scopeRows(samplingTaskId, scope, qa);
-          const pendingDiff = rows.filter(({ flow }) => flow?.reconcileStatus === "Pending").length;
-          const unsubmitted = rows.filter(({ flow }) => !isFinalized(flow) && flow?.reconcileStatus !== "Pending").length;
-          return { unsubmitted, pendingDiff };
-        };
         return (
           <SamplingModal
             taskName={meta.taskName}
@@ -378,7 +375,7 @@ export default function Home() {
             availableOf={availableOf}
             invalidOf={invalidOf}
             excludedOf={excludedOf}
-            blockersOf={blockersOf}
+            unassignedOf={unassignedOf}
             onClose={() => setSamplingTaskId(null)}
             onConfirm={(config: SamplingConfig) => {
               try {

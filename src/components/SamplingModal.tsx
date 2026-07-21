@@ -1,23 +1,22 @@
 import { useMemo, useState } from "react";
 import { X, ShieldCheck } from "lucide-react";
-import { USER_OPTIONS, isAdmin } from "@/lib/currentUser";
+import { USER_OPTIONS } from "@/lib/currentUser";
 import type { SamplingConfig } from "@/store/sessionStore";
 
 export default function SamplingModal({
   taskName,
-  currentEmail,
   /** effective (non-Invalid) case count in the chosen scope */
   effectiveOf,
   /** already-sampled non-Invalid count in scope */
   alreadySampledOf,
-  /** cases still poolable & assignable to the chosen C (anti-self-review applied) */
+  /** assignment-ready cases assignable to the chosen C (anti-self-review applied) */
   availableOf,
   /** invalid count in scope (display) */
   invalidOf,
   /** anti-self-review excluded count for chosen C (display) */
   excludedOf,
-  /** not-yet-finalized counts blocking Start (unsubmitted / pending diff) */
-  blockersOf,
+  /** not-yet-assigned count in scope (display only; QC starts after assignment) */
+  unassignedOf,
   onClose,
   onConfirm,
 }: {
@@ -25,30 +24,27 @@ export default function SamplingModal({
   currentEmail: string;
   effectiveOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
   alreadySampledOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
-  availableOf: (scope: "all_qas" | "by_qa", qaEmail: string | undefined, cReviewer: string | undefined, override: boolean) => number;
+  availableOf: (scope: "all_qas" | "by_qa", qaEmail: string | undefined, cReviewer: string | undefined) => number;
   invalidOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
   excludedOf: (scope: "all_qas" | "by_qa", qaEmail: string | undefined, cReviewer: string | undefined) => number;
-  blockersOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => { unsubmitted: number; pendingDiff: number };
+  unassignedOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
   onClose: () => void;
   onConfirm: (config: SamplingConfig) => void;
 }) {
-  const admin = isAdmin(currentEmail);
   const [scope, setScope] = useState<"all_qas" | "by_qa">("all_qas");
   const [qaEmail, setQaEmail] = useState<string>("");
   const [method, setMethod] = useState<"percentage" | "absolute">("percentage");
   const [value, setValue] = useState<number>(10);
   const [cReviewer, setCReviewer] = useState<string>("");
-  const [override, setOverride] = useState(false);
 
   const scopeQa = scope === "by_qa" ? qaEmail || undefined : undefined;
 
   const effective = effectiveOf(scope, scopeQa);
   const alreadySampled = alreadySampledOf(scope, scopeQa);
-  const available = availableOf(scope, scopeQa, cReviewer || undefined, override);
+  const available = availableOf(scope, scopeQa, cReviewer || undefined);
   const invalid = invalidOf(scope, scopeQa);
   const excluded = excludedOf(scope, scopeQa, cReviewer || undefined);
-  const blockers = blockersOf(scope, scopeQa);
-  const notFinalized = blockers.unsubmitted + blockers.pendingDiff;
+  const unassigned = unassignedOf(scope, scopeQa);
 
   // Target & this-time preview.
   const { target, thisTime } = useMemo(() => {
@@ -60,7 +56,6 @@ export default function SamplingModal({
   }, [method, value, effective, alreadySampled, available]);
 
   const canStart =
-    notFinalized === 0 &&
     (scope === "all_qas" || !!qaEmail) &&
     !!cReviewer &&
     thisTime > 0;
@@ -73,7 +68,6 @@ export default function SamplingModal({
       method,
       value,
       cReviewer: cReviewer || undefined,
-      override: admin || override,
     });
   };
 
@@ -96,9 +90,12 @@ export default function SamplingModal({
             <span className="font-mono font-semibold text-ink">{available}</span> of{" "}
             <span className="font-mono font-semibold text-ink">{effective}</span> effective case(s)
             <div className="mt-1 text-xs text-subtle">
-              Invalid excluded: {invalid} · Anti-self-review excluded: {excluded}
+              Invalid excluded: {invalid} · 未分配（不可抽样）: {unassigned} · 防自审排除: {excluded}
             </div>
           </div>
+          <p className="rounded-md bg-page px-3 py-2 text-xs text-subtle">
+            分配完成即可抽样并指派复核人（Normal 需 A 已分配，Back-to-Back 需 A、B 均已分配）；A/B 标注与复核并行，无需等待定稿。
+          </p>
 
           {/* Scope */}
           <div>
@@ -192,19 +189,8 @@ export default function SamplingModal({
                 </option>
               ))}
             </select>
-            {admin && (
-              <label className="mt-2 flex items-center gap-2 text-xs text-subtle">
-                <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
-                管理员 Override 防自审（允许复核人曾参与该 case 标注）
-              </label>
-            )}
+            <p className="mt-2 text-xs text-muted">防自审强制生效：复核人不能是该 case 的 A / B（任何人都不能绕过）。</p>
           </div>
-
-          {notFinalized > 0 && (
-            <div className="rounded-lg border border-warning/30 bg-warning-light px-3 py-2 text-xs text-[#92400E]">
-              所选范围内仍有未定稿 case，无法开始抽样：未提交 {blockers.unsubmitted} 条 · 待拉齐 {blockers.pendingDiff} 条。
-            </div>
-          )}
         </div>
 
         <div className="flex items-center justify-end gap-2 border-t border-line px-6 py-4">

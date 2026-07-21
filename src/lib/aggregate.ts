@@ -56,7 +56,9 @@ function qcPairsForType(
 ): AccuracyPair[] {
   const pairs: AccuracyPair[] = [];
   for (const { row, flow } of rows) {
-    if (row.invalid || !flow || !flow.qcCompleted) continue;
+    // Accuracy is computed only when BOTH a Finalized Baseline and the current
+    // C result exist (A/B annotation and C QC run in parallel).
+    if (row.invalid || !flow || !flow.finalizedBaseline || !flow.currentResult) continue;
     const baseline = baselineOf(flow);
     const current = flow.currentResult;
     if (!baseline || !current) continue;
@@ -98,7 +100,7 @@ export function individualMetricsForType(
 ): ResultTypeMetrics {
   const pairs: AccuracyPair[] = [];
   for (const { row, flow } of rows) {
-    if (row.invalid || !flow || !flow.qcCompleted) continue;
+    if (row.invalid || !flow || !flow.finalizedBaseline || !flow.currentResult) continue;
     // the person must have submitted as A or B on this case
     const aFirst = flow.aFirstResult;
     const bFirst = flow.bFirstResult;

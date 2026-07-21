@@ -12,7 +12,7 @@ import {
 import { getUserOption, USER_OPTIONS, useCurrentUserStore, type UserRole } from "@/lib/currentUser";
 import { useRubricStore } from "@/store/rubricStore";
 
-const roleLabel = (role: UserRole) => (role === "admin" ? "标注管理员" : "标注编辑");
+const roleLabel = (role: UserRole) => (role === "viewer" ? "标注只读" : "标注编辑");
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();

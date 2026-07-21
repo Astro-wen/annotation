@@ -4,13 +4,11 @@ const STORAGE_KEY = "bytehi-current-user-v2";
 
 // Phase 1 接入 Kani，只保留两类功能角色（PRD 2.1）：
 //  - editor（标注编辑，默认角色）：查看内部全量 Case；Batch Assign / Assign QA /
-//    Set Sampling；作为 A/B 标注和拉齐；Sampling 冻结前改派 A/B、改自己的当前答案；
-//    对未进 Waiting for QC 的 Case 用 Batch Edit；作为被指派且通过防自审的 C 做 QC；
-//    QC 前 Mark/Restore Invalid；导出并查看团队与个人 Accuracy。受防自审约束。
-//  - admin（标注管理员，全权限）：可 Override 防自审、任务归属、C 指派、阶段锁等，
-//    可任意阶段接管 / 改派 / 提交 / 拉齐 / QC / 修改当前生效结果。
-// A / B / C 是 case 级任务身份，不是权限角色。Phase 1 内部用户可见全量数据。
-export type UserRole = "editor" | "admin";
+//    Set Sampling；作为 A/B 标注和拉齐；作为被指派且通过防自审的 C 做 QC；
+//    Batch Edit / Mark/Restore Invalid；导出并查看团队与个人 Accuracy。
+//  - viewer（标注只读）：只能查看 Case、结果与 Accuracy，不能做任何写操作。
+// 不设管理员；任何人都不能绕过防自审。A / B / C 是 case 级任务身份，不是权限角色。
+export type UserRole = "editor" | "viewer";
 
 export interface UserOption {
   email: string;
@@ -39,10 +37,10 @@ export const USER_OPTIONS: UserOption[] = [
     role: "editor",
   },
   {
-    email: "admin.lead@bytedance.com",
-    label: "标注管理员",
-    shortName: "标注管理员",
-    role: "admin",
+    email: "viewer@bytedance.com",
+    label: "标注只读",
+    shortName: "标注只读",
+    role: "viewer",
   },
 ];
 
@@ -52,12 +50,12 @@ export function roleOf(email: string | null | undefined): UserRole {
   return USER_OPTIONS.find((u) => u.email === email)?.role ?? "editor";
 }
 
-/** 标注管理员：全权限，可 Override 防自审 / 阶段锁 / 任务归属。 */
-export function isAdmin(email: string | null | undefined): boolean {
-  return roleOf(email) === "admin";
+/** 标注只读：仅查看，不能写。 */
+export function isViewer(email: string | null | undefined): boolean {
+  return roleOf(email) === "viewer";
 }
 
-/** 标注编辑：默认作业角色，受防自审与阶段锁约束。 */
+/** 标注编辑：可作业，受防自审与阶段锁约束（不设管理员，无人可 Override）。 */
 export function isEditor(email: string | null | undefined): boolean {
   return roleOf(email) === "editor";
 }

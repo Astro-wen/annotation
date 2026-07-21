@@ -10,7 +10,6 @@ import type {
 import { cases as defaultCases } from "@/mock/sessions";
 import { buildDemoSeed } from "@/mock/demoSeed";
 import { samePerson } from "@/lib/access";
-import { isAdmin } from "@/lib/currentUser";
 
 const STORAGE_KEY = "bytehi-cycle-state-v11";
 
@@ -121,8 +120,6 @@ export interface DistributeConfig {
   aDistribution?: QaAllocation[];
   /** Back-to-Back only */
   pairDistribution?: QaPair[];
-  /** admin may bypass A≠B */
-  override?: boolean;
 }
 export interface SamplingConfig {
   scope: "all_qas" | "by_qa";
@@ -130,8 +127,6 @@ export interface SamplingConfig {
   method: "percentage" | "absolute";
   value: number;
   cReviewer?: string;
-  /** admin may bypass anti-self-review exclusion of C */
-  override?: boolean;
 }
 
 /** All results for one Case submitted at once. */
@@ -170,11 +165,6 @@ export function slotStatus(flow: CaseFlow | undefined, slot: "A" | "B" | "C"): S
   if (!assignee) return "Unassigned";
   if (!result) return "Assigned";
   return "Submitted (No QC)";
-}
-
-/** Whether a Case has formed its Finalized Baseline (poolable). */
-function hasFinalizedBaseline(flow?: CaseFlow): boolean {
-  return !!flow?.finalizedBaseline;
 }
 
 // ---- Store ------------------------------------------------------------------
@@ -314,7 +304,6 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     getLogs: (caseId) => get().logs.filter((l) => l.caseId === caseId),
 
     distributeCases: (taskId, config, operator) => {
-      const admin = isAdmin(operator);
       const backToBack = config.mode === "Back-to-Back";
 
       // Mode is locked after the first distribution.
@@ -343,8 +332,8 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       const bByIdx: (string | undefined)[] = [];
       if (backToBack) {
         const pairs = config.pairDistribution ?? [];
-        if (!admin && !config.override && pairs.some((p) => samePerson(p.aName, p.bName))) {
-          throw new Error("同一行的 A、B 不能是同一个人（防自审）。管理员可 Override。");
+        if (pairs.some((p) => p.quantity > 0 && samePerson(p.aName, p.bName))) {
+          throw new Error("同一行的 A、B 不能是同一个人（防自审）。");
         }
         if (pairs.some((p) => p.quantity > 0 && (!p.aName?.trim() || !p.bName?.trim()))) {
           throw new Error("Back-to-Back 每一行都必须同时填写 A 和 B。");
@@ -412,18 +401,17 @@ export const useSessionStore = create<SessionStore>((set, get) => {
 
     assignSingleCase: (caseId, slot, qaName, operator) => {
       const flow = get().getFlow(caseId);
-      const admin = isAdmin(operator);
+      // 改派仅在 Finalized Baseline 形成前允许；Sampling 不冻结 A/B。
+      if (flow?.finalizedBaseline) throw new Error("该 case 已定稿（Finalized Baseline 已形成），不能再改派。");
       if (slot === "B") {
         if (flow?.mode !== "Back-to-Back") throw new Error("该 case 不是 Back-to-Back，没有 B 可指派。");
         const aPerson = flow.aResult?.by ?? flow.aAssignee;
-        if (!admin && samePerson(qaName, aPerson)) throw new Error("B 不能是 A 那个人（防自审）。管理员可 Override。");
-        if (flow.sampledForQC && !admin) throw new Error("已进入 QC，标注编辑不能改派。");
+        if (samePerson(qaName, aPerson)) throw new Error("B 不能是 A 那个人（防自审）。");
       } else {
         const bPerson = flow?.bResult?.by ?? flow?.bAssignee;
-        if (flow?.mode === "Back-to-Back" && !admin && samePerson(qaName, bPerson)) {
-          throw new Error("A 不能是 B 那个人（防自审）。管理员可 Override。");
+        if (flow?.mode === "Back-to-Back" && samePerson(qaName, bPerson)) {
+          throw new Error("A 不能是 B 那个人（防自审）。");
         }
-        if (flow?.sampledForQC && !admin) throw new Error("已进入 QC，标注编辑不能改派。");
       }
       persist({
         flows: patchFlow(caseId, slot === "A" ? { aAssignee: qaName } : { bAssignee: qaName }),
@@ -536,7 +524,6 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     },
 
     startSampling: (taskId, config, operator) => {
-      const admin = isAdmin(operator);
       // Scope cases (non-Invalid, in this task; by_qa restricts to that person's A/B cases).
       const scopeCases = get().cases.filter((c) => {
         if (c.taskId !== taskId || c.invalid) return false;
@@ -549,16 +536,22 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         return true;
       });
 
-      // Precondition: all non-Invalid scope cases must have a Finalized Baseline.
-      const allFinalized = scopeCases.every((c) => hasFinalizedBaseline(get().getFlow(c.caseId)));
-      if (!allFinalized) throw new Error("所选范围内仍有未定稿（未提交或待拉齐）的 case，无法开始抽样。");
+      // Assignment-ready: Normal needs A assigned; Back-to-Back needs A & B assigned.
+      // (QC starts after assignment; A/B annotation and C QC run in parallel — no
+      // Finalized Baseline requirement.)
+      const assignmentReady = (f?: CaseFlow): boolean => {
+        if (!f?.aAssignee) return false;
+        if (f.mode === "Back-to-Back") return !!f.bAssignee;
+        return true;
+      };
 
-      // Eligible = finalized, not yet sampled, and (for non-admin C) passes anti-self-review.
+      // Eligible = assignment-ready, not yet sampled, and C passes anti-self-review
+      // (always enforced — no one can bypass).
       const cEmail = config.cReviewer;
       const eligible = scopeCases.filter((c) => {
         const f = get().getFlow(c.caseId);
-        if (!hasFinalizedBaseline(f) || f?.sampledForQC) return false;
-        if (cEmail && !admin && !config.override) {
+        if (!assignmentReady(f) || f?.sampledForQC) return false;
+        if (cEmail) {
           const aP = f?.aResult?.by ?? f?.aAssignee;
           const bP = f?.bResult?.by ?? f?.bAssignee;
           if (samePerson(cEmail, aP) || samePerson(cEmail, bP)) return false;
@@ -592,8 +585,10 @@ export const useSessionStore = create<SessionStore>((set, get) => {
                 ...x,
                 sampledForQC: true,
                 cReviewer: config.cReviewer || x.cReviewer,
+                // Baseline may not exist yet (A/B & C run in parallel); freeze it
+                // if present so Accuracy can compare once both sides exist.
                 sampledBaseline: f?.finalizedBaseline,
-                finalSource: "baseline",
+                finalSource: f?.finalizedBaseline ? "baseline" : x.finalSource,
               }
             : x,
         );
@@ -621,13 +616,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       const dims = Object.entries(reasonByDim).filter(([, v]) => v);
       if (dims.length === 0 || caseIds.length === 0) return;
       const idSet = new Set(caseIds);
-      const admin = isAdmin(operator);
       const editedIds: string[] = [];
       const flows = get().flows.map((f) => {
         if (!idSet.has(f.caseId)) return f;
-        // Editors may only edit cases not yet in Waiting for QC.
-        const status = caseFlowStatus(f);
-        if (!admin && (status === "Waiting for QC" || status === "QC Completed")) return f;
         const target = f.currentResult ?? f.finalizedBaseline;
         if (!target) return f;
         const results = clone(target.results);

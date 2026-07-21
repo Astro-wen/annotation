@@ -14,7 +14,7 @@ import Layout from "@/components/Layout";
 import { Button } from "@/components/ui";
 import Badge, { statusTone } from "@/components/Badge";
 import DownloadCsvMenu from "@/components/DownloadCsvMenu";
-import { USER_OPTIONS, useCurrentUserStore, isAdmin, shortNameOf } from "@/lib/currentUser";
+import { USER_OPTIONS, useCurrentUserStore, isViewer, shortNameOf } from "@/lib/currentUser";
 import { canToggleInvalid, passesAntiSelfReview, samePerson } from "@/lib/access";
 import { downloadCsv } from "@/lib/csv";
 import { caseSets } from "@/mock/caseSets";
@@ -46,7 +46,7 @@ export default function TaskDetail() {
   const { taskId = "" } = useParams();
   const navigate = useNavigate();
   const currentEmail = useCurrentUserStore((s) => s.currentEmail);
-  const admin = isAdmin(currentEmail);
+  const viewer = isViewer(currentEmail);
 
   const cases = useSessionStore((s) => s.cases);
   const flows = useSessionStore((s) => s.flows);
@@ -236,7 +236,7 @@ export default function TaskDetail() {
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 border-b border-line bg-white px-6 py-3 text-xs">
         <button
-          disabled={selected.size === 0}
+          disabled={selected.size === 0 || viewer}
           onClick={() => setBatchOpen(true)}
           className="rounded-md border border-line px-3 py-1.5 font-medium text-ink hover:bg-page disabled:cursor-not-allowed disabled:opacity-50"
         >
@@ -338,7 +338,7 @@ export default function TaskDetail() {
                     <td className="px-3 py-3"><Badge tone={row.transferToHuman ? "warning" : "neutral"}>{row.transferToHuman ? "Yes" : "No"}</Badge></td>
                     <td className="px-3 py-3">
                       <button
-                        disabled={invalid || (flow?.sampledForQC && !admin)}
+                        disabled={invalid || viewer || !!flow?.finalizedBaseline}
                         onClick={() => setAssignModal({ caseId: row.caseId, slot: "A" })}
                         className="text-xs text-brand hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
                       >
@@ -348,7 +348,7 @@ export default function TaskDetail() {
                     <td className="px-3 py-3"><Badge tone={statusTone(status)}>{status}</Badge></td>
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1">
-                        {!invalid && flow?.reconcileStatus === "Pending" && (admin || samePerson(currentEmail, flow.aResult?.by) || samePerson(currentEmail, flow.bResult?.by)) ? (
+                        {!invalid && flow?.reconcileStatus === "Pending" && (samePerson(currentEmail, flow.aResult?.by) || samePerson(currentEmail, flow.bResult?.by)) ? (
                           <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 text-xs font-medium text-white">拉齐</button>
                         ) : (
                           <button onClick={() => navigate(`/annotate/${row.sessionId}?role=A`)} className="text-xs text-brand hover:underline">
@@ -385,7 +385,7 @@ export default function TaskDetail() {
                       <td className="px-3 py-2"></td>
                       <td className="px-3 py-2">
                         <button
-                          disabled={invalid || (flow?.sampledForQC && !admin)}
+                          disabled={invalid || viewer || !!flow?.finalizedBaseline}
                           onClick={() => setAssignModal({ caseId: row.caseId, slot: "B" })}
                           className="text-brand hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
                         >
@@ -394,7 +394,7 @@ export default function TaskDetail() {
                       </td>
                       <td className="px-3 py-2"><Badge tone={statusTone(slotStatus(flow, "B"))}>{slotStatus(flow, "B")}</Badge></td>
                       <td className="px-3 py-2">
-                        {flow?.reconcileStatus === "Pending" && (admin || samePerson(currentEmail, flow.aResult?.by) || samePerson(currentEmail, flow.bResult?.by)) ? (
+                        {flow?.reconcileStatus === "Pending" && (samePerson(currentEmail, flow.aResult?.by) || samePerson(currentEmail, flow.bResult?.by)) ? (
                           <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 font-medium text-white">拉齐</button>
                         ) : (
                           <button onClick={() => navigate(`/annotate/${row.sessionId}?role=B`)} className="text-brand hover:underline">{flow?.bResult ? "查看" : "标注"}</button>
@@ -426,8 +426,8 @@ export default function TaskDetail() {
                           if (flow?.qcCompleted) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C&view=1`)} className="text-brand hover:underline">查看</button>;
                           const isMyC = samePerson(currentEmail, flow?.cReviewer);
                           const selfConflict = samePerson(currentEmail, flow?.aResult?.by) || samePerson(currentEmail, flow?.bResult?.by);
-                          if (!admin && selfConflict) return <span className="text-muted">你已标过当前 session！</span>;
-                          if (admin || isMyC) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C`)} className="rounded-md bg-brand px-2 py-1 font-medium text-white">复核</button>;
+                          if (selfConflict) return <span className="text-muted">你已标过当前 session！</span>;
+                          if (isMyC) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C`)} className="rounded-md bg-brand px-2 py-1 font-medium text-white">复核</button>;
                           return <span className="text-muted">等待复核</span>;
                         })()}
                       </td>
@@ -487,16 +487,11 @@ export default function TaskDetail() {
           dims={rubricDims}
           onClose={() => setBatchOpen(false)}
           onApply={(reasonByDim) => {
-            // Editors may only edit non-Waiting-for-QC cases; store enforces per-case.
             batchEdit(Array.from(selected), reasonByDim, currentEmail);
             setBatchOpen(false);
             setSelected(new Set());
           }}
-          note={
-            !admin
-              ? "标注编辑仅能批量修改尚未进入 Waiting for QC 的 Case；已进入 QC 的将被跳过。"
-              : "标注管理员可批量修改任意阶段 Case 的当前结果。"
-          }
+          note="批量修改选中 Case 当前生效结果的 reason；防自审与个人 Accuracy 归属不受影响。"
         />
       )}
 

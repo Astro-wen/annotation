@@ -31,7 +31,7 @@ function qcBaseline(flow: CaseFlow): RoundResult | undefined {
 function qcPairsForType(rows: CaseWithFlow[], rt: ResultGroup): AccuracyPair[] {
   const pairs: AccuracyPair[] = [];
   for (const { row, flow } of rows) {
-    if (row.invalid || !flow || !flow.qcCompleted) continue;
+    if (row.invalid || !flow || !flow.finalizedBaseline || !flow.currentResult) continue;
     const baseline = qcBaseline(flow);
     const current = flow.currentResult;
     if (!baseline || !current) continue;

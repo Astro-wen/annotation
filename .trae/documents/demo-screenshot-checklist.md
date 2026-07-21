@@ -7,7 +7,7 @@
 >
 > 顶部「Account」可切换账号来演示两档权限与防自审：
 > - 标注员：`标注员A / 标注员B / 标注员C`
-> - 标注管理员：`标注管理员`
+> - 标注只读：`标注只读`（仅查看，不能写）
 >
 > 本地运行：`npm run dev`（GitHub Pages 线上同一套）。所有会话正文 PII 已脱敏为占位符（`[EMAIL]/[PHONE]/[ADDRESS]`）。
 
@@ -65,10 +65,10 @@
 | C13 | Filter：Problem Type | 顶部下拉 | R1/R2/R3 |
 | C14 | Filter：流程状态 | 顶部下拉 | All/Unassigned/Assigned/Submitted(No QC)/待拉齐/Waiting for QC/QC Completed/Invalid |
 | C15 | **按 annotator 筛选 → 个人准确率** | 顶部 Annotator 选 `标注员A`（Demo-001）| 顶部出现「标注员A 个人准确率：Chatbot/Ticketbot/Human」三类数值 + 连带说明 |
-| C16 | 个人准确率（双人评，谁评算谁） | Demo-002 Annotator 选 `标注员C` 或 `标注管理员` | 各自个人准确率（case 011 首评与定案差一维 → 非满分） |
+| C16 | 个人准确率（双人评，谁评算谁） | Demo-002 Annotator 选 `标注员C` 或 `标注员B` | 各自个人准确率（case 011 首评与定案差一维 → 非满分） |
 | C17 | Assign QA 单条改派 | 某行 Assign A / Assign B | 单条指派弹窗 + 防自审提示 |
 | C18 | Batch Edit | 勾选若干行 → Batch Edit | 按维度选 reason；权限说明（编辑仅未进 QC 的） |
-| C19 | Mark / Restore Invalid | 行 Actions 的 Ban / Restore | QC Completed 后仅管理员可操作（切 Admin 演示） |
+| C19 | Mark / Restore Invalid | 行 Actions 的 Ban / Restore | 标注编辑在 QC Completed 前可操作；标注只读不可 |
 | C20 | Activity Log 抽屉 | 行 Actions 的文件图标（选 QC 完成的 case 011） | 时间/operator/角色/动作/version；含 A→B→拉齐→C 全链 |
 | C21 | 版本快照 | Activity Log 里点 `V{n}` | 逐维分数 + Skip + SQS/UEF/UXS |
 | C22 | 导出 Activity Log CSV | 抽屉右上 Export CSV | 下载单条 case 日志 |
@@ -88,7 +88,7 @@
 | D7 | **维度级 Skip** | 任一维点 Skip | 该维置灰 + 必选 Skip Reason 下拉；可切回数字 |
 | D8 | 提交校验 | 底部提交按钮 | 每维需「数字或 Skip(+Reason)」才可提交 |
 | D9 | 复核视角 | Demo-002 case 009 走「复核」（切到被指派的复核人=标注员C 账号） | 评分表空白 + 右侧只读「冻结的定稿基线」，不展示原始分歧 |
-| D10 | 防自审拦截 | 用曾作为 A 的账号去 Do QC | 「你已标过当前 session！」拦截页；管理员可绕过 |
+| D10 | 防自审拦截 | 用曾作为 A 的账号去复核 | 「你已标过当前 session！」拦截页（任何人都不能绕过） |
 | D11 | 只读 View | QC 完成后点 View / View QC | Read-only 标记、不可提交 |
 
 ---
@@ -101,8 +101,8 @@
 | E2 | Scope All QAs / By QA | 切换 Scope | By QA 出 QA 下拉 |
 | E3 | Method Percentage / Absolute | 切换 Method | %(1–100) 或 绝对数量输入 |
 | E4 | Target / Already sampled / This time | 预览区 | 三个数值随输入变化（累加抽样） |
-| E5 | 指派 C + 防自审 | C 下拉 | 管理员可勾选 Override 防自审 |
-| E6 | 前置未满足禁用 | 对仍有未提交/待拉齐的 task | Start 禁用 + 未提交/待拉齐数量提示 |
+| E5 | 指派复核人 + 防自审 | C 下拉 | 防自审强制生效：复核人不能是该 case 的 A/B（无人可绕过） |
+| E6 | 分配即可抽样（并行） | 打开 Sampling | 提示「分配完成即可抽样，A/B 标注与复核并行」；未分配的 case 计入「未分配（不可抽样）」不进池 |
 
 ---
 
@@ -143,18 +143,18 @@
 
 ## 速查：Demo-001（单人评）各 case 场景
 
-> 映射：标注员A=`editor.a`，标注员B=`editor.b`，标注员C=`editor.c`，标注管理员=`admin.lead`。
+> 映射：标注员A=`editor.a`，标注员B=`editor.b`，标注员C=`editor.c`，标注只读=`viewer`。
 
 | Case | 场景 | 关键人物（标注 / 复核） |
 |---|---|---|
 | C001 | 复核完成，准确率 100% | 标注=标注员A，复核=标注员B |
 | C002 | 复核完成，复核改一维（准确率<100%）| 标注=标注员B，复核=标注员C |
-| C003 | 待复核（已抽样）| 标注=标注员A，复核=标注管理员 |
+| C003 | 待复核（已抽样）| 标注=标注员A，复核=标注员B |
 | C004 | 已提交（未抽样）| 标注=标注员B |
 | C005 | 已分配（未评）| 标注=标注员C |
 | C006 | 未分配 | — |
 | C007 | Type2 多结果 · 复核完成（含 Skip 一致）| 标注=标注员A，复核=标注员B |
-| C008 | AI 转人工 · 待复核 | 标注=标注管理员，复核=标注管理员 |
+| C008 | Ticket 转人工 · 待复核（Human Ticket）| 标注=标注员B，复核=标注员A |
 | C012 | Invalid | 原标注=标注员A |
 
 ## 速查：Demo-002（双人评）各 case 场景
@@ -163,4 +163,4 @@
 |---|---|---|
 | C009 | 两人一致 → 待复核 | 标注员A / 标注员B / 复核=标注员C |
 | C010 | 待拉齐（Diff）| 标注员A / 标注员B |
-| C011 | 拉齐 → 复核完成，个人准确率可算 | 标注员C(首评差一维) / 标注管理员 / 复核=标注员A |
+| C011 | 拉齐 → 复核完成，个人准确率可算 | 标注员C(首评差一维) / 标注员B / 复核=标注员A |

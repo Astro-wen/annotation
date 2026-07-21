@@ -10,7 +10,7 @@ import { executionOptions } from "@/mock/settings";
 import { type ExpectedResult, type ProblemType, type ResultScore, type ReviewRole, resultGroupOf } from "@/mock/types";
 import { useRubricStore } from "@/store/rubricStore";
 import { useSessionStore } from "@/store/sessionStore";
-import { useCurrentUserStore, isAdmin, shortNameOf } from "@/lib/currentUser";
+import { useCurrentUserStore, isViewer, shortNameOf } from "@/lib/currentUser";
 import { samePerson } from "@/lib/access";
 import { computeResultScore } from "@/lib/scoring";
 
@@ -34,7 +34,7 @@ export default function Annotation() {
   const viewOnly = params.get("view") === "1";
 
   const currentEmail = useCurrentUserStore((s) => s.currentEmail);
-  const admin = isAdmin(currentEmail);
+  const viewer = isViewer(currentEmail);
   const getCaseBySession = useSessionStore((s) => s.getCaseBySession);
   const flows = useSessionStore((s) => s.flows);
   const submitAnnotation = useSessionStore((s) => s.submitAnnotation);
@@ -54,15 +54,16 @@ export default function Annotation() {
   const sqsDims = dims.filter((d) => d.group === "SQS");
   const uefDims = dims.filter((d) => d.group === "UEF");
 
-  // Anti-self-review: editor who was A can't be B/C; who was B can't be C.
+  // Anti-self-review (enforced for everyone, no bypass): who was A can't be B/C;
+  // who was B can't be C.
   const selfConflict = useMemo(() => {
-    if (admin || !flow) return false;
+    if (!flow) return false;
     const aP = flow.aResult?.by ?? flow.aAssignee;
     const bP = flow.bResult?.by ?? flow.bAssignee;
     if (role === "B") return samePerson(currentEmail, aP);
     if (role === "C") return samePerson(currentEmail, aP) || samePerson(currentEmail, bP);
     return false;
-  }, [admin, flow, role, currentEmail]);
+  }, [flow, role, currentEmail]);
 
   // Per-result score state: resultId -> { scores, reasons, skips, problemType }
   const [state, setState] = useState<Record<string, { scores: Record<string, number>; reasons: Record<string, string>; skips: Record<string, string>; problemType?: ProblemType }>>(() => {
@@ -86,7 +87,12 @@ export default function Annotation() {
     );
   }
 
-  const readOnly = viewOnly || (flow?.qcCompleted && role !== "C") || (role !== "C" && flow?.sampledForQC && !admin);
+  // Read-only when: 只读账号；显式 view；或 A/B 在 Finalized Baseline 形成后
+  // （定稿后不可再改 A/B；C 复核与之并行、QC 完成后仍可再改）。
+  const readOnly =
+    viewer ||
+    viewOnly ||
+    (role !== "C" && !!flow?.finalizedBaseline);
 
   // C reference (read-only frozen Finalized Baseline; no A/B raw diff).
   const baseline = flow?.sampledBaseline ?? flow?.finalizedBaseline;
@@ -168,7 +174,7 @@ export default function Annotation() {
           <Ban className="h-10 w-10 text-danger" />
           <h2 className="text-lg font-semibold text-ink">你已标过当前 session！</h2>
           <p className="max-w-md text-sm text-subtle">
-            防自审：你已经评过这条 case，不能再对同一条 case 复核。标注管理员可绕过该限制。
+            防自审：你已经评过这条 case，不能再对同一条 case 复核（任何人都不能绕过）。
           </p>
           <button onClick={() => navigate(`/task/${caseRow.taskId}`)} className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white">返回详情</button>
         </div>

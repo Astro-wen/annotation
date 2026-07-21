@@ -23,13 +23,13 @@ export const DEMO_TASK_NAME = "Demo Sample 单人评";
 export const DEMO_B2B_TASK_ID = "TASK-DEMO-002";
 export const DEMO_B2B_TASK_NAME = "Demo Sample 双人评";
 
-// Demo annotator identities (from currentUser USER_OPTIONS): 标注员A/B/C + 管理员.
+// Demo annotator identities — 3 editors (标注员A/B/C). No admin role anymore.
 export const DEMO = {
   aaron: "editor.a@bytedance.com",
   usagi: "editor.b@bytedance.com",
   hachi: "editor.c@bytedance.com",
-  chiikawa: "admin.lead@bytedance.com",
-  admin: "admin.lead@bytedance.com",
+  chiikawa: "editor.b@bytedance.com",
+  admin: "editor.a@bytedance.com",
 };
 
 const SQS_KEYS = [
