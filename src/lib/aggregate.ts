@@ -100,7 +100,11 @@ export function individualMetricsForType(
 ): ResultTypeMetrics {
   const pairs: AccuracyPair[] = [];
   for (const { row, flow } of rows) {
-    if (row.invalid || !flow || !flow.finalizedBaseline || !flow.currentResult) continue;
+    // Individual accuracy compares a person's FIRST submission against the current
+    // C result. It only needs the person's submission and a C result to exist —
+    // it does NOT require a Finalized Baseline (with parallel QC, a case can be
+    // QC-completed while A/B are still unreconciled).
+    if (row.invalid || !flow || !flow.currentResult) continue;
     // the person must have submitted as A or B on this case
     const aFirst = flow.aFirstResult;
     const bFirst = flow.bFirstResult;

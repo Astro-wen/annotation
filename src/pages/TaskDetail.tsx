@@ -416,8 +416,20 @@ export default function TaskDetail() {
                       <td className="px-3 py-2"><Badge tone={flow?.qcCompleted ? "success" : "warning"}>{flow?.qcCompleted ? "复核完成" : "待复核"}</Badge></td>
                       <td className="px-3 py-2">
                         {(() => {
-                          if (flow?.qcCompleted) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C&view=1`)} className="text-brand hover:underline">查看</button>;
                           const isMyC = samePerson(currentEmail, flow?.cReviewer);
+                          if (flow?.qcCompleted) {
+                            const reQc = () => {
+                              if (window.confirm("将覆盖已完成的 QC 结果，重新复核该 case。确定继续？")) {
+                                navigate(`/annotate/${row.sessionId}?role=C`);
+                              }
+                            };
+                            return (
+                              <div className="flex items-center gap-2">
+                                <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C&view=1`)} className="text-brand hover:underline">查看</button>
+                                {isMyC && !viewer && <button onClick={reQc} className="text-subtle hover:text-ink hover:underline">重新复核</button>}
+                              </div>
+                            );
+                          }
                           const selfConflict = samePerson(currentEmail, flow?.aResult?.by) || samePerson(currentEmail, flow?.bResult?.by);
                           if (selfConflict) return <span className="text-muted">你已标过当前 session！</span>;
                           if (isMyC) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C`)} className="rounded-md bg-brand px-2 py-1 font-medium text-white">复核</button>;
