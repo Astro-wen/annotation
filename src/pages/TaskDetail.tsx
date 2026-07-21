@@ -148,17 +148,26 @@ export default function TaskDetail() {
     : null;
 
   // ---- score cell helpers ----
-  const scoreCells = (row: CaseRow, round: RoundResult | undefined, group: "SQS" | "UEF") => {
-    // Group results by AI vs Human template for multi-result display.
+  const scoreCells = (row: CaseRow, round: RoundResult | undefined, group: "SQS" | "UEF", finalRound?: RoundResult) => {
     return (
       <div className="space-y-1">
         {row.expectedResults.map((er) => {
           const s = round?.results[er.resultId];
           const val = !s ? "—" : group === "SQS" ? s.sqsAvg.toFixed(2) : s.uefTotal.toFixed(2);
+          const fs = finalRound?.results[er.resultId];
+          const fVal = !fs ? undefined : group === "SQS" ? fs.sqsAvg.toFixed(2) : fs.uefTotal.toFixed(2);
+          const changed = finalRound && fVal !== undefined && fVal !== val;
           return (
             <div key={er.resultId} className="flex items-center gap-1 font-mono text-xs">
               <span className="w-20 text-[10px] uppercase text-muted">{resultGroupOf(er)}</span>
-              <span className="text-ink">{val}</span>
+              {changed ? (
+                <span>
+                  <span className="text-muted line-through">{val}</span>
+                  <span className="ml-1 font-semibold text-brand">{fVal}</span>
+                </span>
+              ) : (
+                <span className="text-ink">{val}</span>
+              )}
             </div>
           );
         })}
@@ -166,15 +175,34 @@ export default function TaskDetail() {
     );
   };
 
-  const dimCells = (row: CaseRow, round: RoundResult | undefined, dimKey: string) => (
+  // Per-dimension cell. When `finalRound` is given (the reconciled/finalized
+  // baseline), a dimension whose raw value differs from the final one is shown as
+  // the original struck-through followed by the reconciled value, so 拉齐结果 is visible.
+  const dimCells = (row: CaseRow, round: RoundResult | undefined, dimKey: string, finalRound?: RoundResult) => (
     <div className="space-y-1">
       {row.expectedResults.map((er) => {
         const s = round?.results[er.resultId];
         const skipped = s?.skips?.[dimKey] !== undefined;
         const v = s?.scores[dimKey];
+        const raw = skipped ? "Skip" : v === undefined ? "—" : v;
+        // compare with finalized baseline for this dim
+        const fs = finalRound?.results[er.resultId];
+        const fSkipped = fs?.skips?.[dimKey] !== undefined;
+        const fv = fs?.scores[dimKey];
+        const fin = fSkipped ? "Skip" : fv === undefined ? undefined : fv;
+        const changed = finalRound && fin !== undefined && String(raw) !== String(fin);
         return (
           <div key={er.resultId} className="font-mono text-xs text-ink" title={skipped ? s?.skips?.[dimKey] : undefined}>
-            {skipped ? <span className="text-[#B45309]">Skip</span> : v === undefined ? "—" : v}
+            {changed ? (
+              <span>
+                <span className="text-muted line-through">{raw}</span>
+                <span className="ml-1 font-semibold text-brand">{fin}</span>
+              </span>
+            ) : skipped ? (
+              <span className="text-[#B45309]">Skip</span>
+            ) : (
+              raw
+            )}
           </div>
         );
       })}
@@ -231,6 +259,7 @@ export default function TaskDetail() {
           </button>
           <h1 className="text-lg font-semibold text-ink">{meta.taskName}</h1>
           <p className="text-xs text-subtle">Detail · Session List · {taskId} · SQS (6) + UEF · User Experience Score (North Star) · Config {meta.ruleVersion}</p>
+          <p className="mt-0.5 text-[11px] text-muted">展开 Back-to-Back 行后，被拉齐改动的维度显示为 <span className="line-through">原分</span> <span className="font-semibold text-brand">定稿分</span>。</p>
         </div>
         <DownloadCsvMenu taskId={taskId} label="Download CSV" />
       </div>
@@ -305,6 +334,13 @@ export default function TaskDetail() {
               const expanded = expandedRows.has(row.caseId);
               const status = caseStatus(row, flow);
               const eff = effectiveRound(flow);
+              // In expanded Back-to-Back, the main row represents 标注员A; once
+              // reconciled, show A's raw vs the reconciled Finalized Baseline so the
+              // 拉齐结果 is visible (struck-through original → final). Otherwise the
+              // main row shows the effective result as before.
+              const showAReconcile = isB2B && expanded && !!flow?.finalizedBaseline;
+              const mainRound = showAReconcile ? flow?.aResult : eff;
+              const mainFinal = showAReconcile ? flow?.finalizedBaseline : undefined;
               const invalid = row.invalid;
               return (
                 <>
@@ -326,10 +362,10 @@ export default function TaskDetail() {
                     </td>
                     <td className="px-3 py-3">{subtypeCell(row)}</td>
                     <td className="px-3 py-3"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
-                    {sqsExpanded && sqsDims.map((d) => <td key={d.key} className="px-2 py-3">{dimCells(row, eff, d.key)}</td>)}
-                    <td className="px-3 py-3">{scoreCells(row, eff, "SQS")}</td>
-                    <td className="px-3 py-3">{scoreCells(row, eff, "UEF")}</td>
-                    <td className="px-3 py-3">{uxsCell(row, eff)}</td>
+                    {sqsExpanded && sqsDims.map((d) => <td key={d.key} className="px-2 py-3">{dimCells(row, mainRound, d.key, mainFinal)}</td>)}
+                    <td className="px-3 py-3">{scoreCells(row, mainRound, "SQS", mainFinal)}</td>
+                    <td className="px-3 py-3">{scoreCells(row, mainRound, "UEF", mainFinal)}</td>
+                    <td className="px-3 py-3">{uxsCell(row, showAReconcile ? flow?.finalizedBaseline : eff)}</td>
                     <td className="px-3 py-3"><Badge tone={row.transferToHuman ? "warning" : "neutral"}>{row.transferToHuman ? "Yes" : "No"}</Badge></td>
                     <td className="px-3 py-3">
                       <button
@@ -372,9 +408,9 @@ export default function TaskDetail() {
                       </td>
                       <td className="px-3 py-2">{subtypeCell(row)}</td>
                       <td className="px-3 py-2"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
-                      {sqsExpanded && sqsDims.map((d) => <td key={d.key} className="px-2 py-2">{dimCells(row, flow?.bResult, d.key)}</td>)}
-                      <td className="px-3 py-2">{scoreCells(row, flow?.bResult, "SQS")}</td>
-                      <td className="px-3 py-2">{scoreCells(row, flow?.bResult, "UEF")}</td>
+                      {sqsExpanded && sqsDims.map((d) => <td key={d.key} className="px-2 py-2">{dimCells(row, flow?.bResult, d.key, flow?.finalizedBaseline)}</td>)}
+                      <td className="px-3 py-2">{scoreCells(row, flow?.bResult, "SQS", flow?.finalizedBaseline)}</td>
+                      <td className="px-3 py-2">{scoreCells(row, flow?.bResult, "UEF", flow?.finalizedBaseline)}</td>
                       <td className="px-3 py-2">{uxsCell(row, flow?.bResult)}</td>
                       <td className="px-3 py-2"></td>
                       <td className="px-3 py-2">
