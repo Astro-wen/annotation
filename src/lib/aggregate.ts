@@ -65,7 +65,12 @@ function qcPairsForType(
       const b = baseline.results[er.resultId];
       const c = current.results[er.resultId];
       if (!b || !c) continue;
-      pairs.push({ baseline: b.scores, current: c.scores });
+      pairs.push({
+        baseline: b.scores,
+        current: c.scores,
+        baselineSkips: new Set(Object.keys(b.skips ?? {})),
+        currentSkips: new Set(Object.keys(c.skips ?? {})),
+      });
     }
   }
   return pairs;
@@ -110,7 +115,12 @@ export function individualMetricsForType(
       const b = mine.results[er.resultId];
       const c = current.results[er.resultId];
       if (!b || !c) continue;
-      pairs.push({ baseline: b.scores, current: c.scores });
+      pairs.push({
+        baseline: b.scores,
+        current: c.scores,
+        baselineSkips: new Set(Object.keys(b.skips ?? {})),
+        currentSkips: new Set(Object.keys(c.skips ?? {})),
+      });
     }
   }
   return { sqsAvg: null, uefAvg: null, uxsAvg: null, qcAccuracy: qcAccuracy(pairs) };

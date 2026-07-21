@@ -41,6 +41,7 @@ export default function Annotation() {
   const rubric = useRubricStore((s) => s.rubric);
   const weights = useRubricStore((s) => s.weights);
   const activeRubricForVersion = useRubricStore((s) => s.activeRubricForVersion);
+  const skipReasonsForVersion = useRubricStore((s) => s.skipReasonsForVersion);
   const reasonFor = useRubricStore((s) => s.reasonFor);
 
   const caseRow = getCaseBySession(sessionId);
@@ -48,6 +49,7 @@ export default function Annotation() {
 
   const ruleVersion = caseRow?.ruleVersion ?? 1;
   const dims = useMemo(() => activeRubricForVersion(ruleVersion), [ruleVersion, rubric]);
+  const skipReasonOptions = useMemo(() => skipReasonsForVersion(ruleVersion), [ruleVersion, rubric]);
   const sqsDims = dims.filter((d) => d.group === "SQS");
   const uefDims = dims.filter((d) => d.group === "UEF");
 
@@ -61,12 +63,12 @@ export default function Annotation() {
     return false;
   }, [admin, flow, role, currentEmail]);
 
-  // Per-result score state: resultId -> { scores, reasons, problemType }
-  const [state, setState] = useState<Record<string, { scores: Record<string, number>; reasons: Record<string, string>; problemType?: ProblemType }>>(() => {
-    const init: Record<string, { scores: Record<string, number>; reasons: Record<string, string>; problemType?: ProblemType }> = {};
+  // Per-result score state: resultId -> { scores, reasons, skips, problemType }
+  const [state, setState] = useState<Record<string, { scores: Record<string, number>; reasons: Record<string, string>; skips: Record<string, string>; problemType?: ProblemType }>>(() => {
+    const init: Record<string, { scores: Record<string, number>; reasons: Record<string, string>; skips: Record<string, string>; problemType?: ProblemType }> = {};
     for (const er of caseRow?.expectedResults ?? []) {
       // Responsiveness auto-scored; everything else empty. A/B blind, C blank.
-      init[er.resultId] = { scores: { responsiveness: autoResponsiveness() }, reasons: {} };
+      init[er.resultId] = { scores: { responsiveness: autoResponsiveness() }, reasons: {}, skips: {} };
     }
     return init;
   });
@@ -85,18 +87,39 @@ export default function Annotation() {
   const baseline = flow?.sampledBaseline ?? flow?.finalizedBaseline;
 
   const setScore = (rid: string, dimKey: string, v: number) =>
-    setState((prev) => ({
-      ...prev,
-      [rid]: {
-        ...prev[rid],
-        scores: { ...prev[rid].scores, [dimKey]: v },
-        reasons: { ...prev[rid].reasons, [dimKey]: reasonFor(dimKey, v) ?? prev[rid].reasons[dimKey] ?? "" },
-      },
-    }));
+    setState((prev) => {
+      const nextSkips = { ...prev[rid].skips };
+      delete nextSkips[dimKey]; // choosing a number clears any Skip on this dim
+      return {
+        ...prev,
+        [rid]: {
+          ...prev[rid],
+          scores: { ...prev[rid].scores, [dimKey]: v },
+          reasons: { ...prev[rid].reasons, [dimKey]: reasonFor(dimKey, v) ?? prev[rid].reasons[dimKey] ?? "" },
+          skips: nextSkips,
+        },
+      };
+    });
   const setReason = (rid: string, dimKey: string, text: string) =>
     setState((prev) => ({ ...prev, [rid]: { ...prev[rid], reasons: { ...prev[rid].reasons, [dimKey]: text } } }));
   const setProblemType = (rid: string, pt: ProblemType) =>
     setState((prev) => ({ ...prev, [rid]: { ...prev[rid], problemType: pt } }));
+  // Toggle Skip on a dimension: enabling requires a Skip Reason; disabling clears it.
+  const toggleSkip = (rid: string, dimKey: string) =>
+    setState((prev) => {
+      const skipped = prev[rid].skips[dimKey] !== undefined;
+      const nextSkips = { ...prev[rid].skips };
+      const nextScores = { ...prev[rid].scores };
+      if (skipped) {
+        delete nextSkips[dimKey];
+      } else {
+        nextSkips[dimKey] = skipReasonOptions[0] ?? ""; // default reason; user can change
+        delete nextScores[dimKey]; // Skip clears the numeric score
+      }
+      return { ...prev, [rid]: { ...prev[rid], skips: nextSkips, scores: nextScores } };
+    });
+  const setSkipReason = (rid: string, dimKey: string, reason: string) =>
+    setState((prev) => ({ ...prev, [rid]: { ...prev[rid], skips: { ...prev[rid].skips, [dimKey]: reason } } }));
 
   // Whether all cards are complete enough to submit.
   const requiredDims = sqsDims.concat(uefDims).filter((d) => !d.auto); // responsiveness auto excluded
@@ -104,10 +127,16 @@ export default function Annotation() {
   const cardComplete = (er: ExpectedResult): boolean => {
     const st = state[er.resultId];
     if (!st) return false;
-    // Solution Adoption needs a problem type first.
+    // Solution Adoption needs a problem type first (unless it is Skipped).
+    const saSkipped = st.skips["solution_adoption"] !== undefined;
     const needsPT = sqsDims.some((d) => d.key === "solution_adoption");
-    if (needsPT && !st.problemType) return false;
-    return requiredDims.every((d) => st.scores[d.key] !== undefined);
+    if (needsPT && !saSkipped && !st.problemType) return false;
+    // Each dimension must be either scored or Skipped (with a reason).
+    return requiredDims.every((d) => {
+      const skipped = st.skips[d.key] !== undefined;
+      if (skipped) return !!st.skips[d.key]; // must have a Skip Reason
+      return st.scores[d.key] !== undefined;
+    });
   };
 
   const allComplete = caseRow.expectedResults.every(cardComplete);
@@ -116,7 +145,7 @@ export default function Annotation() {
     const perResult: Record<string, ResultScore> = {};
     for (const er of caseRow.expectedResults) {
       const st = state[er.resultId];
-      perResult[er.resultId] = computeResultScore(st.scores, dims, weights, st.reasons, st.problemType);
+      perResult[er.resultId] = computeResultScore(st.scores, dims, weights, st.reasons, st.problemType, st.skips);
     }
     try {
       submitAnnotation(caseRow.caseId, role, perResult, ruleVersion, currentEmail);
@@ -224,9 +253,10 @@ export default function Annotation() {
                   const isSA = d.key === "solution_adoption";
                   const options = isExec ? executionOptions(caseRow.knowledgeSource) : d.options;
                   const reasonOptions = d.reasons.filter((r) => options.includes(r.score));
+                  const skipped = st.skips[d.key] !== undefined;
                   return (
                     <div key={d.key} className="px-4 pt-3">
-                      {isSA && (
+                      {isSA && !skipped && (
                         <div className="mb-2">
                           <p className="mb-1 text-xs font-medium text-ink">Problem Type（先判定 R1/R2/R3 再打分）</p>
                           <div className="flex gap-1">
@@ -243,23 +273,36 @@ export default function Annotation() {
                           </div>
                         </div>
                       )}
-                      <ScoreRow
-                        label={d.dimension}
-                        hint={
-                          isExec
-                            ? `按 Knowledge Source 联动：${caseRow.knowledgeSource === "Skill" ? "Skill 3/2/1/0" : "FAQ/SOP 3/1/0（无 2 档）"}`
-                            : isSA
-                              ? `${st.problemType ?? "R?"} · scored by R1 / R2 / R3 resolution`
-                              : undefined
-                        }
-                        options={options}
-                        value={st.scores[d.key] ?? null}
-                        onChange={(v) => setScore(er.resultId, d.key, v)}
-                        disabled={readOnly || (isSA && !st.problemType) || !!d.auto}
-                        reason={st.reasons[d.key] ?? ""}
-                        onReasonChange={(v) => setReason(er.resultId, d.key, v)}
-                        reasonOptions={reasonOptions}
-                      />
+                      {!d.auto && (
+                        <SkipControl
+                          label={d.dimension}
+                          skipped={skipped}
+                          skipReason={st.skips[d.key] ?? ""}
+                          reasons={skipReasonOptions}
+                          disabled={readOnly}
+                          onToggle={() => toggleSkip(er.resultId, d.key)}
+                          onReasonChange={(v) => setSkipReason(er.resultId, d.key, v)}
+                        />
+                      )}
+                      <div className={skipped ? "pointer-events-none opacity-40" : ""}>
+                        <ScoreRow
+                          label={d.dimension}
+                          hint={
+                            isExec
+                              ? `按 Knowledge Source 联动：${caseRow.knowledgeSource === "Skill" ? "Skill 3/2/1/0" : "FAQ/SOP 3/1/0（无 2 档）"}`
+                              : isSA
+                                ? `${st.problemType ?? "R?"} · scored by R1 / R2 / R3 resolution`
+                                : undefined
+                          }
+                          options={options}
+                          value={st.scores[d.key] ?? null}
+                          onChange={(v) => setScore(er.resultId, d.key, v)}
+                          disabled={readOnly || skipped || (isSA && !st.problemType) || !!d.auto}
+                          reason={st.reasons[d.key] ?? ""}
+                          onReasonChange={(v) => setReason(er.resultId, d.key, v)}
+                          reasonOptions={reasonOptions}
+                        />
+                      </div>
                       {d.auto && (
                         <p className="-mt-2 mb-2 text-[11px] text-muted">系统自动识别，只读直接给值：{st.scores[d.key] ?? "—"}</p>
                       )}
@@ -270,19 +313,34 @@ export default function Annotation() {
                 {/* UEF dimension */}
                 <div className="px-4 pb-3">
                   <Collapsible title="UEF · User Expectation Fulfillment" open onToggle={() => {}}>
-                    {uefDims.map((d) => (
-                      <ScoreRow
-                        key={d.key}
-                        label={d.dimension}
-                        options={d.options}
-                        value={st.scores[d.key] ?? null}
-                        onChange={(v) => setScore(er.resultId, d.key, v)}
-                        disabled={readOnly}
-                        reason={st.reasons[d.key] ?? ""}
-                        onReasonChange={(v) => setReason(er.resultId, d.key, v)}
-                        reasonOptions={d.reasons}
-                      />
-                    ))}
+                    {uefDims.map((d) => {
+                      const skipped = st.skips[d.key] !== undefined;
+                      return (
+                        <div key={d.key}>
+                          <SkipControl
+                            label={d.dimension}
+                            skipped={skipped}
+                            skipReason={st.skips[d.key] ?? ""}
+                            reasons={skipReasonOptions}
+                            disabled={readOnly}
+                            onToggle={() => toggleSkip(er.resultId, d.key)}
+                            onReasonChange={(v) => setSkipReason(er.resultId, d.key, v)}
+                          />
+                          <div className={skipped ? "pointer-events-none opacity-40" : ""}>
+                            <ScoreRow
+                              label={d.dimension}
+                              options={d.options}
+                              value={st.scores[d.key] ?? null}
+                              onChange={(v) => setScore(er.resultId, d.key, v)}
+                              disabled={readOnly || skipped}
+                              reason={st.reasons[d.key] ?? ""}
+                              onReasonChange={(v) => setReason(er.resultId, d.key, v)}
+                              reasonOptions={d.reasons}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
                   </Collapsible>
                 </div>
               </div>
@@ -311,5 +369,55 @@ export default function Annotation() {
         </div>
       </div>
     </Layout>
+  );
+}
+
+// Dimension-level Skip control: a toggle + required Skip Reason dropdown.
+function SkipControl({
+  label,
+  skipped,
+  skipReason,
+  reasons,
+  disabled,
+  onToggle,
+  onReasonChange,
+}: {
+  label: string;
+  skipped: boolean;
+  skipReason: string;
+  reasons: string[];
+  disabled?: boolean;
+  onToggle: () => void;
+  onReasonChange: (v: string) => void;
+}) {
+  return (
+    <div className="mb-1 flex flex-wrap items-center gap-2 text-xs">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onToggle}
+        className={`rounded-md border px-2 py-0.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+          skipped ? "border-warning bg-warning-light text-[#B45309]" : "border-line text-subtle hover:border-brand/50"
+        }`}
+        title={`Skip ${label}`}
+      >
+        {skipped ? "Skipped" : "Skip"}
+      </button>
+      {skipped && (
+        <select
+          value={skipReason}
+          disabled={disabled}
+          onChange={(e) => onReasonChange(e.target.value)}
+          className="h-7 flex-1 rounded-md border border-warning/40 bg-white px-2 text-xs text-ink outline-none focus:border-brand disabled:opacity-50"
+        >
+          {reasons.length === 0 && <option value="">（未配置 Skip Reason）</option>}
+          {reasons.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
   );
 }

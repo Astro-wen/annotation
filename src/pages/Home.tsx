@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Eye, Users, ShieldCheck, Database, UploadCloud, Settings as SettingsIcon, Trash2 } from "lucide-react";
+import { Eye, Users, ShieldCheck, Database, UploadCloud, Settings as SettingsIcon, Trash2, Sparkles } from "lucide-react";
 import Layout from "@/components/Layout";
 import { Button } from "@/components/ui";
 import Badge from "@/components/Badge";
@@ -11,7 +11,7 @@ import SamplingModal from "@/components/SamplingModal";
 import DownloadCsvMenu from "@/components/DownloadCsvMenu";
 import { downloadCsv } from "@/lib/csv";
 import { caseSets } from "@/mock/caseSets";
-import type { CaseSet, CaseType, ResultType } from "@/mock/types";
+import type { CaseSet, CaseType } from "@/mock/types";
 import {
   useSessionStore,
   type CaseFlow,
@@ -39,6 +39,7 @@ export default function Home() {
   const flows = useSessionStore((s) => s.flows);
   const distributeCases = useSessionStore((s) => s.distributeCases);
   const startSampling = useSessionStore((s) => s.startSampling);
+  const loadDemo = useSessionStore((s) => s.loadDemo);
   const reset = useSessionStore((s) => s.reset);
   const currentEmail = useCurrentUserStore((s) => s.currentEmail);
   const configVersion = useRubricStore((s) => s.version);
@@ -108,19 +109,6 @@ export default function Home() {
     );
   };
 
-  const metricCell = (v: number | null) => (v === null ? <span className="text-muted">—</span> : <span>{fmt(v)}</span>);
-
-  const tripleMetric = (byType: Record<ResultType, { sqsAvg: number | null; uefAvg: number | null; uxsAvg: number | null; qcAccuracy: number | "—" }>, pick: "sqsAvg" | "uefAvg" | "uxsAvg") => (
-    <div className="space-y-0.5 font-mono text-xs">
-      {RESULT_TYPES.map((rt) => (
-        <div key={rt} className="flex items-center gap-1">
-          <span className="w-14 text-[10px] uppercase text-muted">{rt}</span>
-          {metricCell(byType[rt][pick])}
-        </div>
-      ))}
-    </div>
-  );
-
   return (
     <Layout>
       <div className="flex items-center justify-between border-b border-line bg-white px-6 py-4">
@@ -129,6 +117,9 @@ export default function Home() {
           <p className="text-xs text-subtle">当前生效评分标准版本：Config v{configVersion}</p>
         </div>
         <div className="flex items-center gap-2">
+          <Button icon={Sparkles} onClick={() => loadDemo()}>
+            Load Demo Sample
+          </Button>
           <Button icon={Database} onClick={() => setImportModal("bytehi")}>
             Import from ByteHi
           </Button>
@@ -199,10 +190,7 @@ export default function Home() {
                     <th className="px-3 py-3 font-medium">Annotation Finish Rate</th>
                     <th className="px-3 py-3 font-medium">Back-to-Back Complete Rate</th>
                     <th className="px-3 py-3 font-medium">QC Complete</th>
-                    <th className="px-3 py-3 font-medium">SQS Avg</th>
-                    <th className="px-3 py-3 font-medium">UEF Avg</th>
-                    <th className="px-3 py-3 font-medium">User Experience Score</th>
-                    <th className="px-3 py-3 font-medium">QC Accuracy</th>
+                    <th className="px-3 py-3 font-medium">SQS / UEF / UXS · QC Acc（按结果类型）</th>
                     <th className="px-3 py-3 font-medium">Actions</th>
                   </tr>
                 </thead>
@@ -267,32 +255,46 @@ export default function Home() {
                             <span className="font-mono text-muted">—</span>
                           )}
                         </td>
-                        <td className="px-3 py-3">{tripleMetric(stats.byType, "sqsAvg")}</td>
-                        <td className="px-3 py-3">{tripleMetric(stats.byType, "uefAvg")}</td>
-                        <td className="px-3 py-3">{tripleMetric(stats.byType, "uxsAvg")}</td>
                         <td className="px-3 py-3">
-                          <div className="space-y-0.5 font-mono text-xs">
-                            {RESULT_TYPES.map((rt) => (
-                              <div key={rt} className="flex items-center gap-1">
-                                <span className="w-14 text-[10px] uppercase text-muted">{rt}</span>
-                                <span className="text-brand">{formatAccuracy(stats.byType[rt].qcAccuracy)}</span>
-                              </div>
-                            ))}
-                          </div>
+                          <table className="text-[11px]">
+                            <thead>
+                              <tr className="text-[9px] uppercase text-muted">
+                                <th className="pr-2 text-left font-medium"></th>
+                                <th className="px-1 font-medium">SQS</th>
+                                <th className="px-1 font-medium">UEF</th>
+                                <th className="px-1 font-medium">UXS</th>
+                                <th className="px-1 font-medium">QC Acc</th>
+                              </tr>
+                            </thead>
+                            <tbody className="font-mono">
+                              {RESULT_TYPES.map((rt) => {
+                                const m = stats.byType[rt];
+                                return (
+                                  <tr key={rt}>
+                                    <td className="pr-2 text-[9px] uppercase text-muted">{rt}</td>
+                                    <td className="px-1 text-center text-ink">{m.sqsAvg === null ? "—" : fmt(m.sqsAvg)}</td>
+                                    <td className="px-1 text-center text-ink">{m.uefAvg === null ? "—" : fmt(m.uefAvg)}</td>
+                                    <td className="px-1 text-center text-ink">{m.uxsAvg === null ? "—" : fmt(m.uxsAvg)}</td>
+                                    <td className="px-1 text-center text-brand">{formatAccuracy(m.qcAccuracy)}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
                         </td>
                         <td className="px-3 py-3">
-                          <div className="flex flex-col items-start gap-1">
+                          <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
                             <Button variant="ghost" icon={Eye} onClick={() => navigate(`/task/${t.taskId}`)}>
                               Detail
                             </Button>
                             <Button variant="ghost" icon={Users} onClick={() => setAssignTask(t)}>
-                              Batch Assign
+                              Assign
                             </Button>
                             <Button variant="ghost" icon={ShieldCheck} onClick={() => setSamplingTaskId(t.taskId)}>
                               Sampling
                             </Button>
                             <Button variant="ghost" onClick={() => exportTaskToByteHi(t)}>
-                              Export to ByteHi
+                              Export
                             </Button>
                             <DownloadCsvMenu taskId={t.taskId} label="Download" />
                           </div>

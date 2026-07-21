@@ -57,6 +57,7 @@ export default function TaskDetail() {
   const batchEdit = useSessionStore((s) => s.batchEdit);
   const getLogs = useSessionStore((s) => s.getLogs);
   const activeRubricForVersion = useRubricStore((s) => s.activeRubricForVersion);
+  const skipReasonsForVersion = useRubricStore((s) => s.skipReasonsForVersion);
 
   const meta = caseSets.find((c) => c.taskId === taskId);
   const flowOf = (caseId: string) => flows.find((f) => f.caseId === caseId);
@@ -80,6 +81,7 @@ export default function TaskDetail() {
   const taskCases = useMemo(() => cases.filter((c) => c.taskId === taskId), [cases, taskId]);
   const ruleVersion = taskCases[0]?.ruleVersion ?? 1;
   const rubricDims = activeRubricForVersion(ruleVersion);
+  const skipReasons = skipReasonsForVersion(ruleVersion);
   const sqsDims = rubricDims.filter((d) => d.group === "SQS");
   const uefDims = rubricDims.filter((d) => d.group === "UEF");
 
@@ -166,10 +168,11 @@ export default function TaskDetail() {
     <div className="space-y-1">
       {row.expectedResults.map((er) => {
         const s = round?.results[er.resultId];
+        const skipped = s?.skips?.[dimKey] !== undefined;
         const v = s?.scores[dimKey];
         return (
-          <div key={er.resultId} className="font-mono text-xs text-ink">
-            {v === undefined ? "—" : v}
+          <div key={er.resultId} className="font-mono text-xs text-ink" title={skipped ? s?.skips?.[dimKey] : undefined}>
+            {skipped ? <span className="text-[#B45309]">Skip</span> : v === undefined ? "—" : v}
           </div>
         );
       })}
@@ -467,6 +470,7 @@ export default function TaskDetail() {
           flow={flowOf(reconcileCaseId)!}
           sqsDims={sqsDims}
           uefDims={uefDims}
+          skipReasons={skipReasons}
           ruleVersion={ruleVersion}
           onClose={() => setReconcileCaseId(null)}
           onConfirm={(agreed) => {
@@ -548,6 +552,9 @@ export default function TaskDetail() {
                   {Object.entries(s.scores).map(([k, v]) => (
                     <div key={k} className="flex justify-between"><span className="text-subtle">{k}</span><span className="font-mono text-ink">{v}</span></div>
                   ))}
+                  {Object.entries(s.skips ?? {}).map(([k, reason]) => (
+                    <div key={k} className="flex justify-between" title={reason}><span className="text-subtle">{k}</span><span className="font-mono text-[#B45309]">Skip</span></div>
+                  ))}
                 </div>
                 <p className="mt-2 font-mono text-xs text-brand">SQS {s.sqsAvg.toFixed(2)} · UEF {s.uefTotal.toFixed(2)} · UXS {s.uxs.toFixed(2)}</p>
               </div>
@@ -604,6 +611,7 @@ function ReconcileModal({
   flow,
   sqsDims,
   uefDims,
+  skipReasons,
   ruleVersion,
   onClose,
   onConfirm,
@@ -612,36 +620,62 @@ function ReconcileModal({
   flow: CaseFlow;
   sqsDims: { key: string; dimension: string; options: number[] }[];
   uefDims: { key: string; dimension: string; options: number[] }[];
+  skipReasons: string[];
   ruleVersion: number;
   onClose: () => void;
   onConfirm: (agreed: Record<string, import("@/mock/types").ResultScore>) => void;
 }) {
   const dims = [...sqsDims, ...uefDims];
   const weights = useRubricStore((s) => s.weights);
-  // seed choices from A per result/dim
-  const [choice, setChoice] = useState<Record<string, Record<string, number>>>(() => {
-    const init: Record<string, Record<string, number>> = {};
+  type Choice = number | { skip: string };
+  // seed choices from A per result/dim (numeric score or Skip reason)
+  const [choice, setChoice] = useState<Record<string, Record<string, Choice>>>(() => {
+    const init: Record<string, Record<string, Choice>> = {};
     for (const er of caseRow.expectedResults) {
-      const a = flow.aResult?.results[er.resultId]?.scores ?? {};
-      init[er.resultId] = { ...a };
+      const a = flow.aResult?.results[er.resultId];
+      const row: Record<string, Choice> = {};
+      for (const d of dims) {
+        if (a?.skips?.[d.key] !== undefined) row[d.key] = { skip: a.skips[d.key] };
+        else if (a?.scores[d.key] !== undefined) row[d.key] = a.scores[d.key];
+      }
+      init[er.resultId] = row;
     }
     return init;
   });
 
-  const setScore = (rid: string, dimKey: string, v: number) =>
+  const setNum = (rid: string, dimKey: string, v: number) =>
     setChoice((prev) => ({ ...prev, [rid]: { ...prev[rid], [dimKey]: v } }));
+  const setSkip = (rid: string, dimKey: string) =>
+    setChoice((prev) => ({ ...prev, [rid]: { ...prev[rid], [dimKey]: { skip: skipReasons[0] ?? "" } } }));
+
+  const isSkip = (c?: Choice): c is { skip: string } => typeof c === "object" && c !== null;
 
   const build = () => {
     const out: Record<string, import("@/mock/types").ResultScore> = {};
     for (const er of caseRow.expectedResults) {
-      const scores = choice[er.resultId] ?? {};
-      const sqsVals = sqsDims.map((d) => scores[d.key] ?? 0);
-      const sqsAvg = sqsVals.reduce((a, b) => a + b, 0) / (sqsDims.length || 1);
-      const uefTotal = uefDims.map((d) => scores[d.key] ?? 0).reduce((a, b) => a + b, 0) / (uefDims.length || 1);
+      const row = choice[er.resultId] ?? {};
+      const scores: Record<string, number> = {};
+      const skips: Record<string, string> = {};
+      for (const d of dims) {
+        const c = row[d.key];
+        if (isSkip(c)) skips[d.key] = c.skip;
+        else if (typeof c === "number") scores[d.key] = c;
+      }
+      const sqsNums = sqsDims.filter((d) => skips[d.key] === undefined).map((d) => scores[d.key] ?? 0);
+      const sqsAvg = sqsNums.length ? sqsNums.reduce((a, b) => a + b, 0) / sqsNums.length : 0;
+      const uefNums = uefDims.filter((d) => skips[d.key] === undefined).map((d) => scores[d.key] ?? 0);
+      const uefTotal = uefNums.length ? uefNums.reduce((a, b) => a + b, 0) / uefNums.length : 0;
       const wSum = weights.sqsWeight + weights.uefWeight || 1;
-      out[er.resultId] = { scores, sqsAvg, uefTotal, uxs: (sqsAvg * weights.sqsWeight + uefTotal * weights.uefWeight) / wSum };
+      out[er.resultId] = { scores, skips, sqsAvg, uefTotal, uxs: (sqsAvg * weights.sqsWeight + uefTotal * weights.uefWeight) / wSum };
     }
     return out;
+  };
+
+  const fmtSide = (r?: import("@/store/sessionStore").RoundResult, rid?: string, key?: string) => {
+    const s = rid && r ? r.results[rid] : undefined;
+    if (s?.skips?.[key!] !== undefined) return "Skip";
+    const v = key ? s?.scores[key] : undefined;
+    return v ?? "—";
   };
 
   return (
@@ -652,32 +686,48 @@ function ReconcileModal({
           <button onClick={onClose} className="text-subtle hover:text-ink"><X className="h-5 w-5" /></button>
         </div>
         <div className="flex-1 space-y-4 overflow-y-auto px-6 py-4">
-          <p className="text-xs text-subtle">逐维展示 A、B 分歧，选择统一结论（一致维度自动沿用 A/B）。ruleVersion v{ruleVersion}。</p>
+          <p className="text-xs text-subtle">逐维展示 A、B 分歧，选择统一结论（一致维度自动沿用 A/B；可选数字或 Skip）。ruleVersion v{ruleVersion}。</p>
           {caseRow.expectedResults.map((er) => {
-            const a = flow.aResult?.results[er.resultId]?.scores ?? {};
-            const b = flow.bResult?.results[er.resultId]?.scores ?? {};
+            const aRes = flow.aResult;
+            const bRes = flow.bResult;
             return (
               <div key={er.resultId} className="rounded-lg border border-line p-3">
                 <p className="mb-2 text-sm font-semibold text-ink">{er.resultType} <span className="font-mono text-xs text-muted">{er.resultId}</span></p>
                 <div className="space-y-2">
                   {dims.map((d) => {
-                    const av = a[d.key];
-                    const bv = b[d.key];
-                    const consistent = av === bv;
+                    const aVal = fmtSide(aRes, er.resultId, d.key);
+                    const bVal = fmtSide(bRes, er.resultId, d.key);
+                    const consistent = aVal === bVal;
+                    const cur = choice[er.resultId]?.[d.key];
                     return (
                       <div key={d.key} className="flex items-center justify-between gap-3 text-xs">
                         <span className="w-40 text-ink">{d.dimension}</span>
                         {consistent ? (
-                          <span className="flex-1 text-success">一致 · {av ?? "—"}</span>
+                          <span className="flex-1 text-success">一致 · {String(aVal)}</span>
                         ) : (
                           <div className="flex flex-1 flex-wrap items-center gap-1">
-                            <span className="text-muted">A={av ?? "—"} · B={bv ?? "—"} →</span>
+                            <span className="text-muted">A={String(aVal)} · B={String(bVal)} →</span>
                             {d.options.map((opt) => {
-                              const sel = (choice[er.resultId]?.[d.key]) === opt;
+                              const sel = cur === opt;
                               return (
-                                <button key={opt} onClick={() => setScore(er.resultId, d.key, opt)} className={`h-7 w-7 rounded-md border text-xs font-semibold ${sel ? "border-brand bg-brand text-white" : "border-line text-subtle hover:border-brand/50"}`}>{opt}</button>
+                                <button key={opt} onClick={() => setNum(er.resultId, d.key, opt)} className={`h-7 w-7 rounded-md border text-xs font-semibold ${sel ? "border-brand bg-brand text-white" : "border-line text-subtle hover:border-brand/50"}`}>{opt}</button>
                               );
                             })}
+                            <button
+                              onClick={() => setSkip(er.resultId, d.key)}
+                              className={`h-7 rounded-md border px-2 text-xs font-semibold ${isSkip(cur) ? "border-warning bg-warning-light text-[#B45309]" : "border-line text-subtle hover:border-brand/50"}`}
+                            >
+                              Skip
+                            </button>
+                            {isSkip(cur) && (
+                              <select
+                                value={cur.skip}
+                                onChange={(e) => setChoice((prev) => ({ ...prev, [er.resultId]: { ...prev[er.resultId], [d.key]: { skip: e.target.value } } }))}
+                                className="h-7 rounded-md border border-warning/40 bg-white px-1 text-[11px] text-ink outline-none focus:border-brand"
+                              >
+                                {skipReasons.map((r) => <option key={r} value={r}>{r}</option>)}
+                              </select>
+                            )}
                           </div>
                         )}
                       </div>

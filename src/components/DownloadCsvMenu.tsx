@@ -41,7 +41,12 @@ function qcPairsForType(rows: CaseWithFlow[], rt: ResultType): AccuracyPair[] {
       const b = baseline.results[er.resultId];
       const c = current.results[er.resultId];
       if (!b || !c) continue;
-      pairs.push({ baseline: b.scores, current: c.scores });
+      pairs.push({
+        baseline: b.scores,
+        current: c.scores,
+        baselineSkips: new Set(Object.keys(b.skips ?? {})),
+        currentSkips: new Set(Object.keys(c.skips ?? {})),
+      });
     }
   }
   return pairs;
@@ -89,6 +94,8 @@ export default function DownloadCsvMenu({
       "language_quality_consistency",
       "uef_accuracy",
       "qc_accuracy",
+      ...SQS_DIM_KEYS.map((k) => `${k}_skip_count`),
+      `${UEF_DIM_KEY}_skip_count`,
       "config_version",
     ];
 
@@ -100,6 +107,7 @@ export default function DownloadCsvMenu({
       const uef: number[] = [];
       const uxs: number[] = [];
       let annotated = 0;
+      const skipCounts: Record<string, number> = {};
 
       for (const { row, flow } of scoped) {
         const eff = row.invalid ? undefined : effectiveRound(flow);
@@ -116,6 +124,7 @@ export default function DownloadCsvMenu({
             sqs.push(s.sqsAvg);
             uef.push(s.uefTotal);
             uxs.push(s.uxs);
+            for (const k of Object.keys(s.skips ?? {})) skipCounts[k] = (skipCounts[k] ?? 0) + 1;
           }
         }
       }
@@ -129,6 +138,7 @@ export default function DownloadCsvMenu({
       const consistencyCols = SQS_DIM_KEYS.map((k) => formatRate(dimConsistency(pairs, k)));
       const uefAccuracy = formatRate(dimConsistency(pairs, UEF_DIM_KEY));
       const qcAcc = formatAccuracy(qcAccuracy(pairs));
+      const skipCountCols = [...SQS_DIM_KEYS, UEF_DIM_KEY].map((k) => String(skipCounts[k] ?? 0));
 
       rows.push([
         rt,
@@ -142,6 +152,7 @@ export default function DownloadCsvMenu({
         ...consistencyCols,
         uefAccuracy,
         qcAcc === "—" ? "" : qcAcc,
+        ...skipCountCols,
         configVersion,
       ]);
     }
@@ -152,6 +163,8 @@ export default function DownloadCsvMenu({
 
   const downloadData = () => {
     const scoreKeys = [...SQS_DIM_KEYS, UEF_DIM_KEY];
+    // Each dimension outputs numeric score + is_skip + skip_reason (PRD).
+    const scoreHeaderCols = scoreKeys.flatMap((k) => [k, `${k}_is_skip`, `${k}_skip_reason`]);
 
     const baseHeaders = [
       "type_number",
@@ -166,7 +179,7 @@ export default function DownloadCsvMenu({
       "covered_source_ids",
       "case_status",
       "final_source",
-      ...scoreKeys,
+      ...scoreHeaderCols,
       "uxs",
       "annotator",
     ];
@@ -181,6 +194,18 @@ export default function DownloadCsvMenu({
     ];
 
     const rows: string[][] = [];
+
+    // For one ResultScore, emit [score, is_skip, skip_reason] per dimension key.
+    const scoreCellsFor = (s?: import("@/mock/types").ResultScore): string[] =>
+      scoreKeys.flatMap((k) => {
+        if (!s) return ["", "", ""];
+        const isSkip = s.skips?.[k] !== undefined;
+        return [
+          isSkip ? "" : String(s.scores[k] ?? ""),
+          isSkip ? "true" : "false",
+          isSkip ? assertNoPII(s.skips![k]) : "",
+        ];
+      });
 
     for (const { row, flow } of scoped) {
       const status = caseStatus(row, flow);
@@ -206,12 +231,9 @@ export default function DownloadCsvMenu({
         if (!includeHistory) {
           const eff = row.invalid ? undefined : effectiveRound(flow);
           const s = eff?.results[er.resultId];
-          const scoreCells = scoreKeys.map((k) =>
-            s ? String(s.scores[k] ?? "") : "",
-          );
           rows.push([
             ...baseCells,
-            ...scoreCells,
+            ...scoreCellsFor(s),
             s ? s.uxs.toFixed(2) : "",
             assertNoPII(annotator),
           ]);
@@ -233,11 +255,10 @@ export default function DownloadCsvMenu({
         rounds.forEach(({ round, role }, idx) => {
           if (!round) return;
           const s = round.results[er.resultId];
-          const scoreCells = scoreKeys.map((k) => (s ? String(s.scores[k] ?? "") : ""));
           const isFinal = role === "current" && round === eff;
           rows.push([
             ...baseCells,
-            ...scoreCells,
+            ...scoreCellsFor(s),
             s ? s.uxs.toFixed(2) : "",
             assertNoPII(round.by ?? ""),
             String(idx + 1),

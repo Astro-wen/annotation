@@ -2,11 +2,12 @@ import { create } from "zustand";
 import {
   defaultRubric,
   defaultWeights,
+  defaultSkipReasons,
   type RubricDimension,
   type ReasonOption,
 } from "@/mock/settings";
 
-const STORAGE_KEY = "bytehi-rubric-state-v4";
+const STORAGE_KEY = "bytehi-rubric-state-v5";
 
 export interface RubricWeights {
   sqsWeight: number;
@@ -20,11 +21,13 @@ export interface RubricVersionSnapshot {
   note: string;
   rubric: RubricDimension[];
   weights: RubricWeights;
+  skipReasons: string[];
 }
 
 interface PersistShape {
   rubric: RubricDimension[];
   weights: RubricWeights;
+  skipReasons: string[];
   version: number;
   history: RubricVersionSnapshot[];
 }
@@ -43,7 +46,7 @@ function loadInitial(): PersistShape {
     if (raw) {
       const parsed = JSON.parse(raw) as PersistShape;
       if (parsed && Array.isArray(parsed.rubric) && parsed.rubric.length > 0) {
-        return parsed;
+        return { ...parsed, skipReasons: parsed.skipReasons ?? clone(defaultSkipReasons) };
       }
     }
   } catch {
@@ -51,18 +54,21 @@ function loadInitial(): PersistShape {
   }
   const rubric = clone(defaultRubric);
   const weights = { ...defaultWeights };
+  const skipReasons = clone(defaultSkipReasons);
   return {
     rubric,
     weights,
+    skipReasons,
     version: 1,
     history: [
       {
         version: 1,
         at: now(),
         operator: "editor.aaron@bytedance.com",
-        note: "Initial standard rubric (6-dim SQS 65% + UEF 35%)",
+        note: "Initial standard rubric (6-dim SQS 65% + UEF 35%, dimension-level Skip)",
         rubric: clone(rubric),
         weights: { ...weights },
+        skipReasons: clone(skipReasons),
       },
     ],
   };
@@ -84,11 +90,13 @@ interface RubricStore extends PersistShape {
    * a newer rubric is published (rule isolation per PRD).
    */
   activeRubricForVersion: (version: number) => RubricDimension[];
+  /** Configured Skip Reasons for a given config version. */
+  skipReasonsForVersion: (version: number) => string[];
   reasonFor: (dimensionKey: string, score: number) => string | undefined;
 
   /** Commit a full edit set atomically, bumping the version and snapshotting. */
   applyEdits: (
-    next: { rubric: RubricDimension[]; weights: RubricWeights },
+    next: { rubric: RubricDimension[]; weights: RubricWeights; skipReasons: string[] },
     operator: string,
     note: string,
   ) => void;
@@ -103,13 +111,16 @@ export const useRubricStore = create<RubricStore>((set, get) => {
     set((state) => {
       const next = { ...state, ...patch };
       try {
-        const shape: PersistShape = {
-          rubric: next.rubric,
-          weights: next.weights,
-          version: next.version,
-          history: next.history,
-        };
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(shape));
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({
+            rubric: next.rubric,
+            weights: next.weights,
+            skipReasons: next.skipReasons,
+            version: next.version,
+            history: next.history,
+          } satisfies PersistShape),
+        );
       } catch {
         // ignore quota errors
       }
@@ -120,6 +131,7 @@ export const useRubricStore = create<RubricStore>((set, get) => {
   const bump = (
     rubric: RubricDimension[],
     weights: RubricWeights,
+    skipReasons: string[],
     operator: string,
     note: string,
   ) => {
@@ -131,10 +143,12 @@ export const useRubricStore = create<RubricStore>((set, get) => {
       note,
       rubric: clone(rubric),
       weights: { ...weights },
+      skipReasons: clone(skipReasons),
     };
     persist({
       rubric,
       weights,
+      skipReasons,
       version,
       history: [...get().history, snapshot],
     });
@@ -151,13 +165,18 @@ export const useRubricStore = create<RubricStore>((set, get) => {
       return rubric.filter((d) => d.enabled);
     },
 
+    skipReasonsForVersion: (version) => {
+      const snap = get().history.find((h) => h.version === version);
+      return snap ? snap.skipReasons : get().skipReasons;
+    },
+
     reasonFor: (dimensionKey, score) => {
       const d = get().rubric.find((x) => x.key === dimensionKey);
       return d?.reasons.find((r) => r.score === score)?.text;
     },
 
     applyEdits: (next, operator, note) => {
-      bump(clone(next.rubric), { ...next.weights }, operator, note);
+      bump(clone(next.rubric), { ...next.weights }, clone(next.skipReasons), operator, note);
     },
 
     addDimension: (input, operator) => {
@@ -171,11 +190,11 @@ export const useRubricStore = create<RubricStore>((set, get) => {
         enabled: true,
         builtin: false,
       };
-      bump([...get().rubric, dim], { ...get().weights }, operator, `Added dimension "${input.dimension}"`);
+      bump([...get().rubric, dim], { ...get().weights }, clone(get().skipReasons), operator, `Added dimension "${input.dimension}"`);
     },
 
     resetToDefault: (operator) => {
-      bump(clone(defaultRubric), { ...defaultWeights }, operator, "Reset rubric to default standard");
+      bump(clone(defaultRubric), { ...defaultWeights }, clone(defaultSkipReasons), operator, "Reset rubric to default standard");
     },
   };
 });

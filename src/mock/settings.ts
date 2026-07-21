@@ -138,6 +138,18 @@ export const defaultWeights = {
   uefWeight: 0.35,
 };
 
+/**
+ * Configurable Skip Reasons (rubric-version scoped). When an annotator Skips a
+ * SQS/UEF dimension, they must pick one of these reasons. Skip is a comparable
+ * answer for Accuracy but is not any of the 3/2/1/0 numeric scores.
+ */
+export const defaultSkipReasons: string[] = [
+  "Not applicable to this case",
+  "Insufficient evidence to judge",
+  "Blocked by upstream error / cannot evaluate",
+  "Out of current rubric scope",
+];
+
 export const configVersion = {
   version: "v1",
   effectiveFrom: "Effective from 2026-07-01 14:30",

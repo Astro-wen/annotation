@@ -9,6 +9,7 @@ import type {
   ReviewRole,
 } from "@/mock/types";
 import { cases as defaultCases } from "@/mock/sessions";
+import { buildDemoSeed } from "@/mock/demoSeed";
 import { samePerson } from "@/lib/access";
 import { isAdmin } from "@/lib/currentUser";
 
@@ -187,6 +188,7 @@ interface SessionStore {
   importSource: string | null;
 
   loadCases: (rows: CaseRow[], source: string) => void;
+  loadDemo: () => void;
   reset: () => void;
 
   getCase: (caseId: string) => CaseRow | undefined;
@@ -242,14 +244,28 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     return [...flows, { ...base, ...patch }];
   };
 
-  // Per-result diff: which resultIds have any dimension score difference.
+  // Per-result diff: which resultIds have any dimension difference.
+  // A dimension differs when its Skip state differs, or (both numeric) the
+  // numeric scores differ. Both-Skip on a dim counts as agreement.
   const resultsDiffer = (a: PerResultScores, b: PerResultScores): boolean => {
     const ids = new Set([...Object.keys(a), ...Object.keys(b)]);
     for (const id of ids) {
-      const sa = a[id]?.scores ?? {};
-      const sb = b[id]?.scores ?? {};
-      const keys = new Set([...Object.keys(sa), ...Object.keys(sb)]);
-      for (const k of keys) if (sa[k] !== sb[k]) return true;
+      const ra = a[id];
+      const rb = b[id];
+      const sa = ra?.scores ?? {};
+      const sb = rb?.scores ?? {};
+      const ska = new Set(Object.keys(ra?.skips ?? {}));
+      const skb = new Set(Object.keys(rb?.skips ?? {}));
+      const keys = new Set([...Object.keys(sa), ...Object.keys(sb), ...ska, ...skb]);
+      for (const k of keys) {
+        const aSkip = ska.has(k);
+        const bSkip = skb.has(k);
+        if (aSkip || bSkip) {
+          if (aSkip !== bSkip) return true; // one skip, one numeric
+          continue; // both skip -> agree on this dim
+        }
+        if (sa[k] !== sb[k]) return true;
+      }
     }
     return false;
   };
@@ -270,6 +286,23 @@ export const useSessionStore = create<SessionStore>((set, get) => {
 
     loadCases: (rows, source) =>
       persist({ cases: rows, flows: [], logs: [], imported: true, importSource: source }),
+
+    loadDemo: () => {
+      const seed = buildDemoSeed();
+      // Merge the seeded demo tasks in alongside the built-in cases; replace any
+      // prior demo entries so re-loading is idempotent.
+      const demoTaskIds = new Set(seed.cases.map((c) => c.taskId));
+      const keptCases = get().cases.filter((c) => !demoTaskIds.has(c.taskId));
+      const keptFlows = get().flows.filter((f) => !demoTaskIds.has(f.taskId));
+      const keptLogs = get().logs.filter((l) => !seed.logs.some((s) => s.caseId === l.caseId));
+      persist({
+        cases: [...seed.cases, ...keptCases],
+        flows: [...seed.flows, ...keptFlows],
+        logs: [...seed.logs, ...keptLogs],
+        imported: true,
+        importSource: "Demo Sample",
+      });
+    },
 
     reset: () => {
       sessionStorage.removeItem(STORAGE_KEY);

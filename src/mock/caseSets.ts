@@ -1,4 +1,10 @@
 import type { CaseSet } from "./types";
+import {
+  DEMO_TASK_ID,
+  DEMO_TASK_NAME,
+  DEMO_B2B_TASK_ID,
+  DEMO_B2B_TASK_NAME,
+} from "./demoSeed";
 
 // Static descriptive metadata per task. Blank starting point: all cases are
 // unassigned/unscored, so Home metrics show "—", QC accuracy shows "—".
@@ -62,14 +68,34 @@ const META: CaseSetMeta[] = [
   },
 ];
 
-export const caseSets: CaseSet[] = META.map((m) => ({
-  taskId: m.taskId,
-  taskName: m.taskName,
-  sampleName: m.sampleName,
-  source: m.source,
-  taskMode: undefined,
-  ruleVersion: m.ruleVersion,
-}));
+export const caseSets: CaseSet[] = [
+  // Pre-seeded demo tasks (visible after "Load Demo Sample"; harmless otherwise
+  // since they contain no cases until the demo is loaded).
+  {
+    taskId: DEMO_TASK_ID,
+    taskName: DEMO_TASK_NAME,
+    sampleName: "Demo N",
+    source: "Import",
+    taskMode: undefined,
+    ruleVersion: "v1",
+  },
+  {
+    taskId: DEMO_B2B_TASK_ID,
+    taskName: DEMO_B2B_TASK_NAME,
+    sampleName: "Demo B",
+    source: "Import",
+    taskMode: undefined,
+    ruleVersion: "v1",
+  },
+  ...META.map((m) => ({
+    taskId: m.taskId,
+    taskName: m.taskName,
+    sampleName: m.sampleName,
+    source: m.source,
+    taskMode: undefined,
+    ruleVersion: m.ruleVersion,
+  })),
+];
 
 export function getCaseSet(taskId: string): CaseSet | undefined {
   return caseSets.find((c) => c.taskId === taskId);

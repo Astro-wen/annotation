@@ -33,15 +33,17 @@ export type CaseType = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
 /** Computed score bundle for one result (one score card). */
 export interface ResultScore {
-  /** dimensionKey -> score; rubric-version aware */
+  /** dimensionKey -> numeric score; rubric-version aware. Skipped dims are absent here. */
   scores: Record<string, number>;
-  /** dimensionKey -> chosen reason text */
+  /** dimensionKey -> chosen reason text (for numeric scores) */
   reasons?: Record<string, string>;
+  /** dimensionKey -> Skip Reason. A dim listed here is Skipped (no numeric score). */
+  skips?: Record<string, string>;
   /** annotator-identified problem type for Solution Adoption */
   problemType?: ProblemType;
-  /** average of the 6 SQS dimensions */
+  /** average of the numeric SQS dimensions (skipped dims excluded) */
   sqsAvg: number;
-  /** the single UEF dimension value */
+  /** the UEF dimension value (0 when Skipped) */
   uefTotal: number;
   /** North Star = sqsAvg*0.65 + uefTotal*0.35 (normalized by weights) */
   uxs: number;

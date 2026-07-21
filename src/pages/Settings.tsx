@@ -16,6 +16,7 @@ export default function Settings() {
   const navigate = useNavigate();
   const rubric = useRubricStore((s) => s.rubric);
   const weights = useRubricStore((s) => s.weights);
+  const skipReasons = useRubricStore((s) => s.skipReasons);
   const version = useRubricStore((s) => s.version);
   const history = useRubricStore((s) => s.history);
   const applyEdits = useRubricStore((s) => s.applyEdits);
@@ -26,14 +27,18 @@ export default function Settings() {
   // Local editable draft. Committed only after confirmation.
   const [draft, setDraft] = useState<RubricDimension[]>(() => clone(rubric));
   const [draftWeights, setDraftWeights] = useState<RubricWeights>(() => ({ ...weights }));
+  const [draftSkipReasons, setDraftSkipReasons] = useState<string[]>(() => clone(skipReasons));
   const [unlocked, setUnlocked] = useState<Record<string, boolean>>({});
   const [pageUnlocked, setPageUnlocked] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
 
   const dirty = useMemo(
-    () => JSON.stringify(draft) !== JSON.stringify(rubric) || JSON.stringify(draftWeights) !== JSON.stringify(weights),
-    [draft, draftWeights, rubric, weights],
+    () =>
+      JSON.stringify(draft) !== JSON.stringify(rubric) ||
+      JSON.stringify(draftWeights) !== JSON.stringify(weights) ||
+      JSON.stringify(draftSkipReasons) !== JSON.stringify(skipReasons),
+    [draft, draftWeights, draftSkipReasons, rubric, weights, skipReasons],
   );
 
   const patchDim = (key: string, patch: Partial<RubricDimension>) =>
@@ -51,11 +56,16 @@ export default function Settings() {
   const resyncFromStore = () => {
     setDraft(clone(useRubricStore.getState().rubric));
     setDraftWeights({ ...useRubricStore.getState().weights });
+    setDraftSkipReasons(clone(useRubricStore.getState().skipReasons));
     setUnlocked({});
   };
 
   const commit = () => {
-    applyEdits({ rubric: draft, weights: draftWeights }, currentEmail, "Edited scoring rubric in Settings");
+    applyEdits(
+      { rubric: draft, weights: draftWeights, skipReasons: draftSkipReasons.map((s) => s.trim()).filter(Boolean) },
+      currentEmail,
+      "Edited scoring rubric in Settings",
+    );
     setUnlocked({});
     setConfirmOpen(false);
   };
@@ -176,6 +186,51 @@ export default function Settings() {
           onPatchReason={patchReason}
         />
 
+        {/* Skip Reasons (dimension-level Skip) */}
+        <section className="rounded-xl border border-line bg-white">
+          <div className="flex items-center gap-2 border-b border-line px-5 py-4">
+            <MessageSquareText className="h-5 w-5 text-brand" />
+            <div>
+              <h2 className="text-sm font-semibold">Skip Reasons（维度级 Skip）</h2>
+              <p className="text-xs text-subtle">
+                每个 SQS / UEF 维度都可在分数选项下方选择 Skip；选 Skip 必须选择以下 Skip Reason 之一。随评分标准版本记录。
+              </p>
+            </div>
+          </div>
+          <div className="space-y-2 px-5 py-4">
+            {draftSkipReasons.map((r, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <span className="font-mono text-xs text-muted">{i + 1}.</span>
+                {pageUnlocked ? (
+                  <>
+                    <input
+                      value={r}
+                      onChange={(e) => setDraftSkipReasons((rs) => rs.map((x, idx) => (idx === i ? e.target.value : x)))}
+                      className="flex-1 rounded-md border border-brand/30 px-2 py-1 text-sm text-ink outline-none focus:border-brand"
+                    />
+                    <button
+                      onClick={() => setDraftSkipReasons((rs) => rs.filter((_, idx) => idx !== i))}
+                      className="text-xs text-danger hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </>
+                ) : (
+                  <span className="flex-1 rounded-md border border-line bg-page px-2 py-1 text-sm text-subtle">{r}</span>
+                )}
+              </div>
+            ))}
+            {pageUnlocked && (
+              <button
+                onClick={() => setDraftSkipReasons((rs) => [...rs, "New skip reason"])}
+                className="mt-1 inline-flex items-center gap-1 text-sm text-brand hover:underline"
+              >
+                <Plus className="h-3.5 w-3.5" /> Add skip reason
+              </button>
+            )}
+          </div>
+        </section>
+
         {/* Add dimension / reset */}
         <div className="flex items-center gap-3">
           <Button icon={Plus} onClick={() => setAddOpen(true)}>
@@ -233,6 +288,7 @@ export default function Settings() {
               onClick={() => {
                 setDraft(clone(rubric));
                 setDraftWeights({ ...weights });
+                setDraftSkipReasons(clone(skipReasons));
                 setUnlocked({});
               }}
             >
