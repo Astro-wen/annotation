@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, Ban } from "lucide-react";
+import { ArrowLeft, Ban, ChevronDown, ChevronRight } from "lucide-react";
 import Layout from "@/components/Layout";
 import ChatThread from "@/components/ChatThread";
-import { ScoreRow, Collapsible } from "@/components/ScorePanel";
+import { ScoreRow } from "@/components/ScorePanel";
 import Badge from "@/components/Badge";
 import { getConversation } from "@/mock/conversation";
 import { executionOptions } from "@/mock/settings";
@@ -73,6 +73,10 @@ export default function Annotation() {
     }
     return init;
   });
+
+  // Collapse state per result card (卷子). Default: all expanded.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const toggleCard = (rid: string) => setCollapsed((c) => ({ ...c, [rid]: !c[rid] }));
 
   if (!caseRow) {
     return (
@@ -233,117 +237,109 @@ export default function Annotation() {
 
           {caseRow.expectedResults.map((er) => {
             const st = state[er.resultId];
-            const sqsTotalPreview = (() => {
-              const preview = computeResultScore(st.scores, dims, weights);
-              return preview;
-            })();
+            const sqsTotalPreview = computeResultScore(st.scores, dims, weights);
+            const isCollapsed = collapsed[er.resultId];
             return (
               <div key={er.resultId} className="border-b-4 border-line">
-                <div className="flex items-center justify-between bg-page px-4 py-2">
-                  <span className="text-sm font-semibold text-ink">
-                    {resultGroupOf(er)} Result <span className="text-xs font-normal text-muted">· {er.formTemplate} 评分卷 · {er.entryMode}</span>
+                {/* Card header — click to collapse/expand this 评分卷 (like SQS/UEF). */}
+                <button
+                  type="button"
+                  onClick={() => toggleCard(er.resultId)}
+                  className="flex w-full items-center justify-between bg-page px-4 py-2 text-left hover:bg-gray-100"
+                >
+                  <span className="flex items-center gap-1.5 text-sm font-semibold text-ink">
+                    {isCollapsed ? <ChevronRight className="h-4 w-4 text-subtle" /> : <ChevronDown className="h-4 w-4 text-subtle" />}
+                    {resultGroupOf(er)} <span className="text-xs font-normal text-muted">· {er.formTemplate} 评分卷 · {er.entryMode}</span>
                   </span>
                   <span className="font-mono text-xs text-brand">
                     SQS {sqsTotalPreview.sqsAvg.toFixed(2)} · UEF {sqsTotalPreview.uefTotal.toFixed(2)} · UXS {sqsTotalPreview.uxs.toFixed(2)}
                   </span>
-                </div>
+                </button>
 
-                {/* SQS dimensions */}
-                {sqsDims.map((d) => {
-                  const isExec = d.key === "execution_correctness";
-                  const isSA = d.key === "solution_adoption";
-                  const options = isExec ? executionOptions(caseRow.knowledgeSource) : d.options;
-                  const reasonOptions = d.reasons.filter((r) => options.includes(r.score));
-                  const skipped = st.skips[d.key] !== undefined;
-                  return (
-                    <div key={d.key} className="px-4 pt-3">
-                      {isSA && !skipped && (
-                        <div className="mb-2">
-                          <p className="mb-1 text-xs font-medium text-ink">Problem Type（先判定 R1/R2/R3 再打分）</p>
-                          <div className="flex gap-1">
-                            {PROBLEM_TYPES.map((pt) => (
-                              <button
-                                key={pt.value}
-                                disabled={readOnly}
-                                onClick={() => setProblemType(er.resultId, pt.value)}
-                                className={`rounded-md border px-2 py-1 text-xs ${st.problemType === pt.value ? "border-brand bg-brand text-white" : "border-line text-subtle hover:border-brand/50"} disabled:opacity-50`}
-                              >
-                                {pt.label}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {!d.auto && (
-                        <SkipControl
-                          label={d.dimension}
-                          skipped={skipped}
-                          skipReason={st.skips[d.key] ?? ""}
-                          reasons={skipReasonOptions}
-                          disabled={readOnly}
-                          onToggle={() => toggleSkip(er.resultId, d.key)}
-                          onReasonChange={(v) => setSkipReason(er.resultId, d.key, v)}
-                        />
-                      )}
-                      <div className={skipped ? "pointer-events-none opacity-40" : ""}>
-                        <ScoreRow
-                          label={d.dimension}
-                          hint={
-                            isExec
-                              ? `按 Knowledge Source 联动：${caseRow.knowledgeSource === "Skill" ? "Skill 3/2/1/0" : "FAQ/SOP 3/1/0（无 2 档）"}`
-                              : isSA
-                                ? `${st.problemType ?? "R?"} · scored by R1 / R2 / R3 resolution`
-                                : undefined
-                          }
-                          options={options}
-                          value={st.scores[d.key] ?? null}
-                          onChange={(v) => setScore(er.resultId, d.key, v)}
-                          disabled={readOnly || skipped || (isSA && !st.problemType) || !!d.auto}
-                          reason={st.reasons[d.key] ?? ""}
-                          onReasonChange={(v) => setReason(er.resultId, d.key, v)}
-                          reasonOptions={reasonOptions}
-                        />
-                      </div>
-                      {d.auto && (
-                        <p className="-mt-2 mb-2 text-[11px] text-muted">系统自动识别，只读直接给值：{st.scores[d.key] ?? "—"}</p>
-                      )}
-                    </div>
-                  );
-                })}
-
-                {/* UEF dimension */}
-                <div className="px-4 pb-3">
-                  <Collapsible title="UEF · User Expectation Fulfillment" open onToggle={() => {}}>
-                    {uefDims.map((d) => {
+                {!isCollapsed && (
+                  <div className="pb-3">
+                    {/* SQS dimensions */}
+                    {sqsDims.map((d) => {
+                      const isExec = d.key === "execution_correctness";
+                      const isSA = d.key === "solution_adoption";
+                      const options = isExec ? executionOptions(caseRow.knowledgeSource) : d.options;
+                      const reasonOptions = d.reasons.filter((r) => options.includes(r.score));
                       const skipped = st.skips[d.key] !== undefined;
                       return (
-                        <div key={d.key}>
-                          <SkipControl
+                        <div key={d.key} className="px-4 pt-3">
+                          {isSA && !skipped && (
+                            <div className="mb-2">
+                              <p className="mb-1 text-xs font-medium text-ink">Problem Type（先判定 R1/R2/R3 再打分）</p>
+                              <div className="flex gap-1">
+                                {PROBLEM_TYPES.map((pt) => (
+                                  <button
+                                    key={pt.value}
+                                    disabled={readOnly}
+                                    onClick={() => setProblemType(er.resultId, pt.value)}
+                                    className={`rounded-md border px-2 py-1 text-xs ${st.problemType === pt.value ? "border-brand bg-brand text-white" : "border-line text-subtle hover:border-brand/50"} disabled:opacity-50`}
+                                  >
+                                    {pt.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          <ScoreRow
                             label={d.dimension}
+                            hint={
+                              isExec
+                                ? `按 Knowledge Source 联动：${caseRow.knowledgeSource === "Skill" ? "Skill 3/2/1/0" : "FAQ/SOP 3/1/0（无 2 档）"}`
+                                : isSA
+                                  ? `${st.problemType ?? "R?"} · scored by R1 / R2 / R3 resolution`
+                                  : undefined
+                            }
+                            options={options}
+                            value={st.scores[d.key] ?? null}
+                            onChange={(v) => setScore(er.resultId, d.key, v)}
+                            disabled={readOnly || (isSA && !st.problemType && !skipped) || !!d.auto}
+                            reason={st.reasons[d.key] ?? ""}
+                            onReasonChange={(v) => setReason(er.resultId, d.key, v)}
+                            reasonOptions={reasonOptions}
+                            skippable={!d.auto}
                             skipped={skipped}
                             skipReason={st.skips[d.key] ?? ""}
-                            reasons={skipReasonOptions}
-                            disabled={readOnly}
-                            onToggle={() => toggleSkip(er.resultId, d.key)}
-                            onReasonChange={(v) => setSkipReason(er.resultId, d.key, v)}
+                            skipReasons={skipReasonOptions}
+                            onToggleSkip={() => toggleSkip(er.resultId, d.key)}
+                            onSkipReasonChange={(v) => setSkipReason(er.resultId, d.key, v)}
                           />
-                          <div className={skipped ? "pointer-events-none opacity-40" : ""}>
-                            <ScoreRow
-                              label={d.dimension}
-                              options={d.options}
-                              value={st.scores[d.key] ?? null}
-                              onChange={(v) => setScore(er.resultId, d.key, v)}
-                              disabled={readOnly || skipped}
-                              reason={st.reasons[d.key] ?? ""}
-                              onReasonChange={(v) => setReason(er.resultId, d.key, v)}
-                              reasonOptions={d.reasons}
-                            />
-                          </div>
+                          {d.auto && (
+                            <p className="-mt-2 mb-2 text-[11px] text-muted">系统自动识别，只读直接给值：{st.scores[d.key] ?? "—"}</p>
+                          )}
                         </div>
                       );
                     })}
-                  </Collapsible>
-                </div>
+
+                    {/* UEF dimension */}
+                    {uefDims.map((d) => {
+                      const skipped = st.skips[d.key] !== undefined;
+                      return (
+                        <div key={d.key} className="px-4 pt-3">
+                          <ScoreRow
+                            label={`UEF · ${d.dimension}`}
+                            options={d.options}
+                            value={st.scores[d.key] ?? null}
+                            onChange={(v) => setScore(er.resultId, d.key, v)}
+                            disabled={readOnly}
+                            reason={st.reasons[d.key] ?? ""}
+                            onReasonChange={(v) => setReason(er.resultId, d.key, v)}
+                            reasonOptions={d.reasons}
+                            skippable
+                            skipped={skipped}
+                            skipReason={st.skips[d.key] ?? ""}
+                            skipReasons={skipReasonOptions}
+                            onToggleSkip={() => toggleSkip(er.resultId, d.key)}
+                            onSkipReasonChange={(v) => setSkipReason(er.resultId, d.key, v)}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -370,55 +366,5 @@ export default function Annotation() {
         </div>
       </div>
     </Layout>
-  );
-}
-
-// Dimension-level Skip control: a toggle + required Skip Reason dropdown.
-function SkipControl({
-  label,
-  skipped,
-  skipReason,
-  reasons,
-  disabled,
-  onToggle,
-  onReasonChange,
-}: {
-  label: string;
-  skipped: boolean;
-  skipReason: string;
-  reasons: string[];
-  disabled?: boolean;
-  onToggle: () => void;
-  onReasonChange: (v: string) => void;
-}) {
-  return (
-    <div className="mb-1 flex flex-wrap items-center gap-2 text-xs">
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={onToggle}
-        className={`rounded-md border px-2 py-0.5 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-          skipped ? "border-warning bg-warning-light text-[#B45309]" : "border-line text-subtle hover:border-brand/50"
-        }`}
-        title={`Skip ${label}`}
-      >
-        {skipped ? "Skipped" : "Skip"}
-      </button>
-      {skipped && (
-        <select
-          value={skipReason}
-          disabled={disabled}
-          onChange={(e) => onReasonChange(e.target.value)}
-          className="h-7 flex-1 rounded-md border border-warning/40 bg-white px-2 text-xs text-ink outline-none focus:border-brand disabled:opacity-50"
-        >
-          {reasons.length === 0 && <option value="">（未配置 Skip Reason）</option>}
-          {reasons.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </select>
-      )}
-    </div>
   );
 }

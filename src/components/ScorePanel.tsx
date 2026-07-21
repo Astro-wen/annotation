@@ -33,6 +33,13 @@ export function ScoreRow({
   reason,
   onReasonChange,
   reasonOptions: reasonOptionsProp,
+  // Dimension-level Skip (rendered as a toggle in the top-right corner).
+  skippable,
+  skipped,
+  skipReason,
+  skipReasons,
+  onToggleSkip,
+  onSkipReasonChange,
 }: {
   label: string;
   hint?: string;
@@ -43,6 +50,12 @@ export function ScoreRow({
   reason: string;
   onReasonChange: (v: string) => void;
   reasonOptions?: ReasonOption[];
+  skippable?: boolean;
+  skipped?: boolean;
+  skipReason?: string;
+  skipReasons?: string[];
+  onToggleSkip?: () => void;
+  onSkipReasonChange?: (v: string) => void;
 }) {
   // Reasoning is not free text: annotators pick a standard reason defined in Settings
   // for this dimension. Options are filtered to the scores valid for this row.
@@ -50,23 +63,52 @@ export function ScoreRow({
 
   return (
     <div className="mb-4 rounded-lg border border-line p-3 last:mb-0">
-      <div className="mb-2 flex items-center justify-between gap-3">
+      <div className="mb-2 flex items-start justify-between gap-3">
         <div>
           <p className="text-sm font-medium text-ink">{label}</p>
           {hint && <p className="text-xs text-subtle">{hint}</p>}
         </div>
-        {/* When standard reasons exist, picking a reason already sets the score,
-            so the standalone 3/2/1/0 buttons are redundant and hidden. */}
-        {reasonOptions.length === 0 && (
-          <ScoreButtons options={options} value={value} onChange={onChange} disabled={disabled} />
-        )}
+        <div className="flex shrink-0 items-center gap-2">
+          {/* When standard reasons exist, picking a reason already sets the score,
+              so the standalone 3/2/1/0 buttons are redundant and hidden. */}
+          {!skipped && reasonOptions.length === 0 && (
+            <ScoreButtons options={options} value={value} onChange={onChange} disabled={disabled} />
+          )}
+          {/* Skip toggle in the top-right corner. */}
+          {skippable && (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={onToggleSkip}
+              className={`rounded-md border px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                skipped ? "border-warning bg-warning-light text-[#B45309]" : "border-line text-subtle hover:border-brand/50"
+              }`}
+              title={`Skip ${label}`}
+            >
+              {skipped ? "Skipped" : "Skip"}
+            </button>
+          )}
+        </div>
       </div>
 
-      {reasonOptions.length > 0 ? (
+      {skipped ? (
         <div className="space-y-1.5">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted">
-            Standard reason (from Settings)
-          </p>
+          <select
+            value={skipReason ?? ""}
+            disabled={disabled}
+            onChange={(e) => onSkipReasonChange?.(e.target.value)}
+            className="h-8 w-full rounded-md border border-warning/40 bg-white px-2 text-xs text-ink outline-none focus:border-brand disabled:opacity-50"
+          >
+            {(skipReasons ?? []).length === 0 && <option value="">（未配置 Skip Reason）</option>}
+            {(skipReasons ?? []).map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : reasonOptions.length > 0 ? (
+        <div className="space-y-1.5">
           {reasonOptions.map((r) => {
             const selected = reason === r.text;
             const matchesScore = value === r.score;
