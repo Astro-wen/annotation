@@ -9,7 +9,7 @@ import { getConversation } from "@/mock/conversation";
 import { executionOptions } from "@/mock/settings";
 import { type ExpectedResult, type ProblemType, type ResultScore, type ReviewRole, resultGroupOf } from "@/mock/types";
 import { useRubricStore } from "@/store/rubricStore";
-import { useSessionStore } from "@/store/sessionStore";
+import { useSessionStore, type RoundResult } from "@/store/sessionStore";
 import { useCurrentUserStore, isViewer, shortNameOf } from "@/lib/currentUser";
 import { samePerson } from "@/lib/access";
 import { computeResultScore } from "@/lib/scoring";
@@ -96,6 +96,28 @@ export default function Annotation() {
 
   // C reference (read-only frozen Finalized Baseline; no A/B raw diff).
   const baseline = flow?.sampledBaseline ?? flow?.finalizedBaseline;
+
+  // Per-dimension A/B reference for the C reviewer. With parallel QC, A/B may not
+  // have scored yet — show "—" then; once they submit (or a baseline exists), show
+  // each side's value (number / "Skip"). Only meaningful while reviewing as C.
+  const refValue = (round: RoundResult | undefined, resultId: string, dimKey: string): string => {
+    const s = round?.results?.[resultId];
+    if (!s) return "—";
+    if (s.skips && s.skips[dimKey] !== undefined) return "Skip";
+    return s.scores[dimKey] !== undefined ? String(s.scores[dimKey]) : "—";
+  };
+  const showAbRef = role === "C";
+  const abRefLine = (resultId: string, dimKey: string) => {
+    if (!showAbRef) return null;
+    const a = refValue(flow?.aResult, resultId, dimKey);
+    const b = flow?.mode === "Back-to-Back" ? refValue(flow?.bResult, resultId, dimKey) : null;
+    return (
+      <p className="mb-1 font-mono text-[11px] text-muted">
+        标注员1（A）={a}
+        {b !== null && <> · 标注员2（B）={b}</>}
+      </p>
+    );
+  };
 
   const setScore = (rid: string, dimKey: string, v: number) =>
     setState((prev) => {
@@ -290,6 +312,7 @@ export default function Annotation() {
                               </div>
                             </div>
                           )}
+                          {abRefLine(er.resultId, d.key)}
                           <ScoreRow
                             label={d.dimension}
                             hint={
@@ -325,6 +348,7 @@ export default function Annotation() {
                       const skipped = st.skips[d.key] !== undefined;
                       return (
                         <div key={d.key} className="px-4 pt-3">
+                          {abRefLine(er.resultId, d.key)}
                           <ScoreRow
                             label={`UEF · ${d.dimension}`}
                             options={d.options}

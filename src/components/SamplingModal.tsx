@@ -46,13 +46,14 @@ export default function SamplingModal({
   const excluded = excludedOf(scope, scopeQa, cReviewer || undefined);
   const unassigned = unassignedOf(scope, scopeQa);
 
-  // Target & this-time preview.
-  const { target, thisTime } = useMemo(() => {
+  // How many cases this action will sample (percentage counts against effective
+  // total; absolute is a direct count), capped by what's currently available.
+  const thisTime = useMemo(() => {
     if (method === "percentage") {
       const t = value <= 0 ? 0 : Math.ceil((effective * value) / 100);
-      return { target: t, thisTime: Math.max(0, Math.min(t - alreadySampled, available)) };
+      return Math.max(0, Math.min(t - alreadySampled, available));
     }
-    return { target: alreadySampled + Math.min(value, available), thisTime: Math.max(0, Math.min(value, available)) };
+    return Math.max(0, Math.min(value, available));
   }, [method, value, effective, alreadySampled, available]);
 
   const canStart =
@@ -148,30 +149,23 @@ export default function SamplingModal({
             <div className="mt-2 flex items-center gap-2">
               <input
                 type="number"
-                min={method === "percentage" ? 1 : 1}
+                min={1}
                 max={method === "percentage" ? 100 : available}
                 value={value || ""}
-                onChange={(e) => setValue(Math.max(0, Number(e.target.value) || 0))}
+                onChange={(e) => {
+                  const raw = Math.max(0, Number(e.target.value) || 0);
+                  setValue(method === "percentage" ? Math.min(100, raw) : raw);
+                }}
                 className="h-10 w-32 rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
               />
               <span className="text-subtle">{method === "percentage" ? "% (1–100)" : "cases"}</span>
             </div>
           </div>
 
-          {/* Preview */}
-          <div className="grid grid-cols-3 gap-2 rounded-lg border border-line px-4 py-3 text-center">
-            <div>
-              <p className="text-xs text-subtle">Target</p>
-              <p className="font-mono text-lg font-semibold text-ink">{target}</p>
-            </div>
-            <div>
-              <p className="text-xs text-subtle">Already sampled</p>
-              <p className="font-mono text-lg font-semibold text-ink">{alreadySampled}</p>
-            </div>
-            <div>
-              <p className="text-xs text-subtle">This time</p>
-              <p className="font-mono text-lg font-semibold text-brand">{thisTime}</p>
-            </div>
+          {/* Preview — single clear line: how many cases this action will sample. */}
+          <div className="rounded-lg border border-line bg-page px-4 py-3 text-sm">
+            本次将抽取 <span className="font-mono text-lg font-semibold text-brand">{thisTime}</span> 个 case
+            <span className="text-subtle">（当前可抽 {available} 个{alreadySampled > 0 ? `，已抽 ${alreadySampled} 个` : ""}）</span>
           </div>
 
           {/* Assign C */}
