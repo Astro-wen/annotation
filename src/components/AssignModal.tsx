@@ -182,8 +182,8 @@ export default function AssignModal({
             </div>
             <p className="mt-2 text-xs text-subtle">
               {mode === "Back-to-Back"
-                ? "双人同评一条 case：两名标注员独立评分，一致进池，不一致进待拉齐。"
-                : "单人评：标注员评完即定稿进抽样复核池。"}
+                ? "双人同评一条 case：两名标注员独立评分，一致自动定稿，不一致进待拉齐、拉齐后定稿。"
+                : "单人评：标注员评完即定稿。"}
               {!lockedMode && " 首次分配将锁定该模式，之后不可切换。"}
             </p>
           </div>

@@ -729,7 +729,7 @@ function ReconcileModal({
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-line px-6 py-4">
           <button onClick={onClose} className="rounded-md px-4 py-2 text-sm text-brand hover:bg-page">Cancel</button>
-          <button onClick={() => onConfirm(build())} className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white">确认拉齐并进入 QC 池</button>
+          <button onClick={() => onConfirm(build())} className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white">确认拉齐</button>
         </div>
       </div>
     </div>
