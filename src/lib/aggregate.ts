@@ -92,7 +92,26 @@ export function metricsForType(
   };
 }
 
-/** Individual accuracy: compare a person's FIRST submission vs current-effective. */
+/**
+ * 个人 Accuracy 使用 A/B 的哪个提交版本仍待业务/后端确认（spec §5.8）。
+ * 已锁定：不能使用「标注员看到 QC 后再修改」的版本。
+ * 候选：first（首次正式提交，防刷分）| latest（QC 前最后一次提交）。
+ * Demo 集中在此单点配置为 "first"，接后端后由接口返回，不要在组件里散落写死。
+ * TODO(待后端/业务确认最终口径).
+ */
+export const INDIVIDUAL_AB_VERSION: "first" | "latest" = "first";
+
+/** Pick a person's own submission on this case per the (mock) version 口径. */
+function mySubmission(flow: CaseFlow, email: string): RoundResult | undefined {
+  // Demo 只保存了 first；latest 口径接后端后再补。
+  const aFirst = flow.aFirstResult;
+  const bFirst = flow.bFirstResult;
+  if (aFirst && samePerson(aFirst.by, email)) return aFirst;
+  if (bFirst && samePerson(bFirst.by, email)) return bFirst;
+  return undefined;
+}
+
+/** Individual accuracy: compare a person's submission (口径见上) vs current-effective. */
 export function individualMetricsForType(
   rows: { row: CaseRow; flow?: CaseFlow }[],
   rt: ResultGroup,
@@ -100,20 +119,11 @@ export function individualMetricsForType(
 ): ResultTypeMetrics {
   const pairs: AccuracyPair[] = [];
   for (const { row, flow } of rows) {
-    // Individual accuracy compares a person's FIRST submission against the current
-    // C result. It only needs the person's submission and a C result to exist —
-    // it does NOT require a Finalized Baseline (with parallel QC, a case can be
-    // QC-completed while A/B are still unreconciled).
+    // Individual accuracy compares a person's submission against the current C
+    // result. It needs the person's submission and a C result to exist — it does
+    // NOT require a Finalized Baseline (parallel QC may complete before reconcile).
     if (row.invalid || !flow || !flow.currentResult) continue;
-    // the person must have submitted as A or B on this case
-    const aFirst = flow.aFirstResult;
-    const bFirst = flow.bFirstResult;
-    const mine =
-      aFirst && samePerson(aFirst.by, email)
-        ? aFirst
-        : bFirst && samePerson(bFirst.by, email)
-          ? bFirst
-          : undefined;
+    const mine = mySubmission(flow, email);
     const current = flow.currentResult;
     if (!mine || !current) continue;
     for (const er of row.expectedResults) {

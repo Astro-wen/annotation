@@ -1,40 +1,39 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Database, ArrowRight, CheckCircle2, RotateCcw, Download, UploadCloud, Info } from "lucide-react";
+import { ArrowRight, CheckCircle2, RotateCcw, Download, UploadCloud, Info } from "lucide-react";
 import Layout from "@/components/Layout";
 import { PageHeader, Button } from "@/components/ui";
 import Badge from "@/components/Badge";
-import ImportByteHiModal from "@/components/ImportByteHiModal";
 import NewAnnotationTaskModal from "@/components/NewAnnotationTaskModal";
 import { downloadCsv } from "@/lib/csv";
 import { useSessionStore } from "@/store/sessionStore";
-import type { ResultType } from "@/mock/types";
+import { resultGroupOf, type ResultGroup } from "@/mock/types";
 
+// Upload / Data download share the same Human Annotation Template.
 const TEMPLATE_HEADERS = [
+  "merge_id",
   "session_id",
+  "ticket_id",
   "task_id",
   "language",
   "region",
   "knowledge_source",
-  "annotation_category",
-  "category",
-  "merge_id",
-  "source_record_ids",
-  "case_type",
-  "service_subtypes",
+  "service_type",
+  "service_stage",
 ];
 
 const TEMPLATE_SAMPLE = [
-  ["7700000000000000001", "TASK-IMPORTED", "en", "US", "Skill", "Chatbot only", "cat-1", "MG-1", "REC-1", "1", "CHATBOT"],
-  ["7700000000000000002", "TASK-IMPORTED", "id", "ID", "FAQ", "Chatbot → Human IM", "cat-4", "MG-2", "REC-2", "4", "CHATBOT|HUMAN_IM"],
+  ["MG-1", "7700000000000000001", "", "TASK-IMPORTED", "en", "US", "Skill", "AI", "IM"],
+  ["MG-2", "7700000000000000002", "TK-2", "TASK-IMPORTED", "id", "ID", "FAQ", "AI+Human", "IM"],
+  ["MG-3", "", "TK-3", "TASK-IMPORTED", "ar", "SA", "SOP", "AI+Human", "Ticket"],
 ];
 
-const resultTone = (type: ResultType): "brand" | "warning" | "neutral" =>
-  type === "Human" ? "warning" : type === "Ticketbot" ? "neutral" : "brand";
+const groupTone = (g: ResultGroup): "brand" | "warning" | "neutral" =>
+  g === "Human IM" || g === "Human Ticket" ? "warning" : g === "Ticketbot" ? "neutral" : "brand";
 
 export default function ImportSample() {
   const navigate = useNavigate();
-  const [modal, setModal] = useState<"bytehi" | "csv" | null>(null);
+  const [csvOpen, setCsvOpen] = useState(false);
 
   const cases = useSessionStore((s) => s.cases);
   const imported = useSessionStore((s) => s.imported);
@@ -42,14 +41,17 @@ export default function ImportSample() {
   const reset = useSessionStore((s) => s.reset);
 
   const downloadTemplate = () => {
-    downloadCsv("import_template.csv", TEMPLATE_HEADERS, TEMPLATE_SAMPLE);
+    downloadCsv("human_annotation_template.csv", TEMPLATE_HEADERS, TEMPLATE_SAMPLE);
   };
+
+  // Recognized result count preview (each expected result = one score card).
+  const totalResults = cases.reduce((sum, c) => sum + c.expectedResults.length, 0);
 
   return (
     <Layout>
       <PageHeader
         title="Import Sample"
-        subtitle="Import a sample from ByteHi or upload a CSV — the demo really parses the CSV and drives the whole app"
+        subtitle="Phase 1：仅支持 CSV 上传（与 Data 下载共用同一份 Human Annotation Template）"
         actions={
           <Button variant="primary" icon={ArrowRight} onClick={() => navigate("/task/TASK-20260623-001")}>
             Go to Task Detail
@@ -61,21 +63,11 @@ export default function ImportSample() {
         {/* Active dataset banner */}
         <div className="flex items-center justify-between rounded-lg border border-line bg-page px-4 py-3 text-sm">
           <span className="flex items-center gap-2">
-            {imported ? (
-              <>
-                <CheckCircle2 className="h-4 w-4 text-success" />
-                <span className="font-medium text-ink">Using imported dataset</span>
-                <span className="text-subtle">
-                  ({cases.length} cases{importSource ? ` · ${importSource}` : ""})
-                </span>
-              </>
-            ) : (
-              <>
-                <Database className="h-4 w-4 text-brand" />
-                <span className="font-medium text-ink">Using built-in demo data</span>
-                <span className="text-subtle">({cases.length} cases)</span>
-              </>
-            )}
+            <CheckCircle2 className="h-4 w-4 text-success" />
+            <span className="font-medium text-ink">{imported ? "Using imported dataset" : "Using built-in demo data"}</span>
+            <span className="text-subtle">
+              ({cases.length} cases · {totalResults} results{imported && importSource ? ` · ${importSource}` : ""})
+            </span>
           </span>
           {imported && (
             <button onClick={reset} className="flex items-center gap-1.5 text-xs text-subtle hover:text-ink">
@@ -84,28 +76,24 @@ export default function ImportSample() {
           )}
         </div>
 
-        {/* Import entries */}
+        {/* Upload entry */}
         <div className="rounded-xl border border-line bg-white p-5">
           <div className="flex flex-wrap items-center gap-3">
-            <Button variant="secondary" icon={Database} onClick={() => setModal("bytehi")}>
-              Import from ByteHi
-            </Button>
-            <Button variant="primary" icon={UploadCloud} onClick={() => setModal("csv")}>
+            <Button variant="primary" icon={UploadCloud} onClick={() => setCsvOpen(true)}>
               Upload CSV
             </Button>
             <button onClick={downloadTemplate} className="ml-auto flex items-center gap-1.5 text-xs text-brand hover:underline">
-              <Download className="h-3.5 w-3.5" /> Download CSV template (with sample rows)
+              <Download className="h-3.5 w-3.5" /> Download Human Annotation Template
             </button>
           </div>
         </div>
 
-        {/* 服务结果识别 note */}
+        {/* Recognition note */}
         <div className="flex items-start gap-2 rounded-lg border border-brand/20 bg-brand-light px-4 py-3 text-sm text-brand">
           <Info className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
-            <span className="font-medium">服务结果识别 (Service result recognition):</span> the system
-            recognizes each Case into one of Types 1–8 and generates its expected results (Chatbot /
-            Ticketbot use the AI form; Human uses the Human form). These fields are read-only.
+            系统结合 <b>service type</b>（AI / Human）与 <b>service stage</b>（IM / Ticket）识别每条 Case 的服务结果，
+            归入 Chatbot / Human IM / Ticketbot / Human Ticket 四组，一条 Case 最多 4 项结果。识别结果由后端返回，页面只展示。
           </span>
         </div>
 
@@ -121,67 +109,47 @@ export default function ImportSample() {
                 <tr className="border-b border-line bg-page text-left text-xs uppercase tracking-wide text-subtle">
                   <th className="px-4 py-3 font-medium">Case ID</th>
                   <th className="px-4 py-3 font-medium">Session ID</th>
-                  <th className="px-4 py-3 font-medium">Case Type</th>
-                  <th className="px-4 py-3 font-medium">Annotation Category</th>
+                  <th className="px-4 py-3 font-medium">Ticket ID</th>
                   <th className="px-4 py-3 font-medium">Knowledge Source</th>
-                  <th className="px-4 py-3 font-medium">Expected Results</th>
-                  <th className="px-4 py-3 font-medium">Transfer to human?</th>
+                  <th className="px-4 py-3 font-medium">Recognized Results</th>
                 </tr>
               </thead>
               <tbody>
-                {cases.map((c) => (
+                {cases.slice(0, 40).map((c) => (
                   <tr key={c.caseId} className="border-b border-line last:border-0 hover:bg-page">
                     <td className="px-4 py-3 font-mono text-xs text-ink">{c.caseId}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-subtle">{c.sessionId}</td>
-                    <td className="px-4 py-3 text-subtle">Type {c.caseType}</td>
-                    <td className="px-4 py-3 text-subtle">{c.annotationCategory}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-subtle">{c.sessionId || "—"}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-subtle">{c.ticketId ?? "—"}</td>
                     <td className="px-4 py-3">
-                      <Badge tone={c.knowledgeSource === "SOP" ? "neutral" : "brand"}>
-                        {c.knowledgeSource}
-                      </Badge>
+                      <Badge tone={c.knowledgeSource === "SOP" ? "neutral" : "brand"}>{c.knowledgeSource}</Badge>
                     </td>
                     <td className="px-4 py-3">
                       <span className="flex flex-wrap gap-1">
                         {c.expectedResults.map((r) => (
-                          <Badge key={r.resultId} tone={resultTone(r.resultType)}>
-                            {r.resultType}
+                          <Badge key={r.resultId} tone={groupTone(resultGroupOf(r))}>
+                            {resultGroupOf(r)}
                           </Badge>
                         ))}
                       </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      {c.transferToHuman ? (
-                        <Badge tone="warning">Yes</Badge>
-                      ) : (
-                        <span className="text-subtle">No</span>
-                      )}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          {cases.length > 40 && (
+            <div className="border-t border-line px-4 py-2 text-center text-xs text-muted">仅预览前 40 条，共 {cases.length} 条 Case。</div>
+          )}
         </div>
 
         {/* Error list area */}
         <div className="flex items-center gap-2 rounded-lg border border-success/20 bg-success-light px-4 py-3 text-sm text-success">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
-          <span>No import errors — all rows recognized into a valid Case Type.</span>
+          <span>No import errors — all rows recognized into valid results.</span>
         </div>
       </div>
 
-      {modal === "bytehi" && (
-        <ImportByteHiModal
-          onClose={() => setModal(null)}
-          onConfirm={(task) => {
-            setModal(null);
-            navigate(`/task/${task.taskId}`);
-          }}
-        />
-      )}
-      {modal === "csv" && (
-        <NewAnnotationTaskModal onClose={() => setModal(null)} />
-      )}
+      {csvOpen && <NewAnnotationTaskModal onClose={() => setCsvOpen(false)} />}
     </Layout>
   );
 }

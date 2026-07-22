@@ -7,7 +7,7 @@ import {
   type ReasonOption,
 } from "@/mock/settings";
 
-const STORAGE_KEY = "bytehi-rubric-state-v5";
+const STORAGE_KEY = "bytehi-rubric-state-v6";
 
 export interface RubricWeights {
   sqsWeight: number;

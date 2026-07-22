@@ -40,15 +40,14 @@ export function computeResultScore(
 /**
  * QC Accuracy over a set of finalized (QC-completed, non-Invalid) result pairs.
  *
- * Per PRD:
+ * Per spec §5.8 / 最新会议口径：
  *   QC Accuracy = Σ(per SQS-dim consistency rate × 65% ÷ 6) + UEF consistency rate × 35%
- *   Consistency per dimension:
- *     - both numeric & equal -> consistent
- *     - both Skip            -> consistent
- *     - one Skip, one numeric-> inconsistent
- *   Skip Reason / reason text / display-only fields do not affect Accuracy.
- *   Denominator = number of finalized results in this set.
- *   Empty set -> "—" (never 0%).
+ *   一致性判定（逐维、逐样本）：
+ *     - 两侧都是数字且相等 -> 一致
+ *     - 任一侧选择 Skip     -> 该维「该样本」不进入分母（既不算对也不算错）
+ *   Skip Reason / reason 文本 / 展示字段不影响 Accuracy。
+ *   每个维度的分母 = 该维两侧都给了数字的样本数；分母为 0 时该维不计入。
+ *   整个集合为空 -> "—"（不显示 0%）。
  */
 export interface AccuracyPair {
   /** SQS+UEF dimension keys -> baseline numeric score (absent if skipped) */
@@ -72,25 +71,47 @@ const SQS_DIM_KEYS = [
 
 const UEF_DIM_KEY = "user_expectation_fulfillment";
 
-/** Whether a single dimension is consistent between baseline and current. */
-export function dimConsistent(p: AccuracyPair, key: string): boolean {
+/** Whether this pair counts toward the given dimension's denominator (both sides numeric). */
+export function dimCounts(p: AccuracyPair, key: string): boolean {
   const bSkip = p.baselineSkips?.has(key) ?? false;
   const cSkip = p.currentSkips?.has(key) ?? false;
-  if (bSkip || cSkip) return bSkip && cSkip; // both skip = consistent; one skip = not
+  return !bSkip && !cSkip; // any-side Skip -> drop from denominator
+}
+
+/** Whether a single dimension is consistent (only meaningful when dimCounts is true). */
+export function dimConsistent(p: AccuracyPair, key: string): boolean {
+  if (!dimCounts(p, key)) return false;
   return (p.baseline[key] ?? null) === (p.current[key] ?? null);
+}
+
+/** Per-dimension consistency rate across pairs, Skip samples excluded from denominator. */
+function dimRate(pairs: AccuracyPair[], key: string): number | null {
+  const counted = pairs.filter((p) => dimCounts(p, key));
+  if (counted.length === 0) return null; // no comparable sample for this dim
+  return counted.filter((p) => dimConsistent(p, key)).length / counted.length;
 }
 
 export function qcAccuracy(pairs: AccuracyPair[]): number | "—" {
   if (pairs.length === 0) return "—";
-  const n = pairs.length;
 
-  const sqsRates = SQS_DIM_KEYS.map((k) => pairs.filter((p) => dimConsistent(p, k)).length / n);
-  const uefRate = pairs.filter((p) => dimConsistent(p, UEF_DIM_KEY)).length / n;
+  const sqsRates = SQS_DIM_KEYS.map((k) => dimRate(pairs, k));
+  const uefRate = dimRate(pairs, UEF_DIM_KEY);
 
-  // Use the exact 65% ÷ 6 per SQS dim to avoid rounding to 64.98%.
-  const sqsPart = sqsRates.reduce((sum, r) => sum + (r * 0.65) / 6, 0);
-  const uefPart = uefRate * 0.35;
-  return sqsPart + uefPart;
+  // A dimension with no comparable sample (all Skipped) contributes nothing and
+  // its weight is redistributed across the dimensions that do have samples.
+  let weightSum = 0;
+  let weighted = 0;
+  sqsRates.forEach((r) => {
+    if (r === null) return;
+    weighted += r * (0.65 / 6);
+    weightSum += 0.65 / 6;
+  });
+  if (uefRate !== null) {
+    weighted += uefRate * 0.35;
+    weightSum += 0.35;
+  }
+  if (weightSum === 0) return "—"; // every dimension Skipped on every sample
+  return weighted / weightSum;
 }
 
 /** Format an accuracy value for display: number -> "xx.x%", "—" -> "—". */

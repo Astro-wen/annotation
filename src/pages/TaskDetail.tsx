@@ -147,6 +147,23 @@ export default function TaskDetail() {
       }))
     : null;
 
+  // All participants (A/B annotators) and their four-group personal Accuracy —
+  // shown directly at the top of Detail, no per-person filter required (spec §5.5).
+  const participants = useMemo(() => {
+    const set = new Set<string>();
+    taskCases.forEach((c) => {
+      const f = flowOf(c.caseId);
+      [f?.aResult?.by ?? f?.aAssignee, f?.bResult?.by ?? f?.bAssignee].forEach((p) => p && set.add(p));
+    });
+    return Array.from(set);
+  }, [taskCases, flows]);
+
+  const rowsForAcc = taskCases.map((row) => ({ row, flow: flowOf(row.caseId) }));
+  const personalAccuracy = participants.map((email) => ({
+    email,
+    groups: RESULT_GROUPS.map((rt) => individualMetricsForType(rowsForAcc, rt, email).qcAccuracy),
+  }));
+
   // ---- score cell helpers ----
   const scoreCells = (row: CaseRow, round: RoundResult | undefined, group: "SQS" | "UEF", finalRound?: RoundResult) => {
     return (
@@ -264,6 +281,35 @@ export default function TaskDetail() {
         <DownloadCsvMenu taskId={taskId} label="Download CSV" />
       </div>
 
+      {/* Personal Accuracy — all participants, four groups, no per-person filter. */}
+      <div className="border-b border-line bg-white px-6 py-3">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-subtle">Personal Accuracy（按结果组）</p>
+        {personalAccuracy.length === 0 ? (
+          <p className="text-xs text-muted">暂无参与标注员，或尚无可比较的 QC 结果。</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-[520px] text-xs">
+              <thead>
+                <tr className="text-[10px] uppercase text-muted">
+                  <th className="py-1 pr-4 text-left font-medium">标注员</th>
+                  {RESULT_GROUPS.map((rt) => <th key={rt} className="px-3 py-1 text-center font-medium">{rt}</th>)}
+                </tr>
+              </thead>
+              <tbody className="font-mono">
+                {personalAccuracy.map((p) => (
+                  <tr key={p.email} className="border-t border-line/60">
+                    <td className="py-1 pr-4 font-sans text-ink">{shortNameOf(p.email)}</td>
+                    {p.groups.map((acc, i) => (
+                      <td key={i} className="px-3 py-1 text-center text-brand">{formatAccuracy(acc)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 border-b border-line bg-white px-6 py-3 text-xs">
         <button
@@ -365,7 +411,18 @@ export default function TaskDetail() {
                     {sqsExpanded && sqsDims.map((d) => <td key={d.key} className="px-2 py-3">{dimCells(row, mainRound, d.key, mainFinal)}</td>)}
                     <td className="px-3 py-3">{scoreCells(row, mainRound, "SQS", mainFinal)}</td>
                     <td className="px-3 py-3">{scoreCells(row, mainRound, "UEF", mainFinal)}</td>
-                    <td className="px-3 py-3">{uxsCell(row, showAReconcile ? flow?.finalizedBaseline : eff)}</td>
+                    <td className="px-3 py-3">
+                      {uxsCell(row, showAReconcile ? flow?.finalizedBaseline : eff)}
+                      {(() => {
+                        // Final Result source label (spec §5.8): QC / Finalized Baseline / —.
+                        const src = flow?.currentResult ? "QC" : flow?.finalizedBaseline ? "Finalized Baseline" : "—";
+                        return (
+                          <span className={`mt-1 block text-[10px] ${src === "QC" ? "text-brand" : src === "—" ? "text-muted" : "text-subtle"}`}>
+                            来源：{src}
+                          </span>
+                        );
+                      })()}
+                    </td>
                     <td className="px-3 py-3"><Badge tone={row.transferToHuman ? "warning" : "neutral"}>{row.transferToHuman ? "Yes" : "No"}</Badge></td>
                     <td className="px-3 py-3">
                       <button
@@ -380,10 +437,10 @@ export default function TaskDetail() {
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1">
                         {!invalid && flow?.reconcileStatus === "Pending" && (samePerson(currentEmail, flow.aResult?.by) || samePerson(currentEmail, flow.bResult?.by)) ? (
-                          <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 text-xs font-medium text-white">拉齐</button>
+                          <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 text-xs font-medium text-white">Reconcile</button>
                         ) : (
                           <button onClick={() => navigate(`/annotate/${row.sessionId}?role=A`)} className="text-xs text-brand hover:underline">
-                            {flow?.aResult ? "查看" : "标注"}
+                            {flow?.aResult ? "View" : "Annotate"}
                           </button>
                         )}
                         <button onClick={() => setLogCaseId(row.caseId)} className="text-subtle hover:text-ink" title="Activity Log"><FileText className="h-4 w-4" /></button>
@@ -425,9 +482,9 @@ export default function TaskDetail() {
                       <td className="px-3 py-2"><Badge tone={statusTone(slotStatus(flow, "B"))}>{slotStatus(flow, "B")}</Badge></td>
                       <td className="px-3 py-2">
                         {flow?.reconcileStatus === "Pending" && (samePerson(currentEmail, flow.aResult?.by) || samePerson(currentEmail, flow.bResult?.by)) ? (
-                          <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 font-medium text-white">拉齐</button>
+                          <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 font-medium text-white">Reconcile</button>
                         ) : (
-                          <button onClick={() => navigate(`/annotate/${row.sessionId}?role=B`)} className="text-brand hover:underline">{flow?.bResult ? "查看" : "标注"}</button>
+                          <button onClick={() => navigate(`/annotate/${row.sessionId}?role=B`)} className="text-brand hover:underline">{flow?.bResult ? "View" : "Annotate"}</button>
                         )}
                       </td>
                     </tr>
@@ -461,14 +518,14 @@ export default function TaskDetail() {
                             };
                             return (
                               <div className="flex items-center gap-2">
-                                <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C&view=1`)} className="text-brand hover:underline">查看</button>
-                                {isMyC && !viewer && <button onClick={reQc} className="text-subtle hover:text-ink hover:underline">重新复核</button>}
+                                <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C&view=1`)} className="text-brand hover:underline">View</button>
+                                {isMyC && !viewer && <button onClick={reQc} className="text-subtle hover:text-ink hover:underline">Edit QC</button>}
                               </div>
                             );
                           }
                           const selfConflict = samePerson(currentEmail, flow?.aResult?.by) || samePerson(currentEmail, flow?.bResult?.by);
                           if (selfConflict) return <span className="text-muted">你已标过当前 session！</span>;
-                          if (isMyC) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C`)} className="rounded-md bg-brand px-2 py-1 font-medium text-white">复核</button>;
+                          if (isMyC) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C`)} className="rounded-md bg-brand px-2 py-1 font-medium text-white">Do QC</button>;
                           return <span className="text-muted">等待复核</span>;
                         })()}
                       </td>

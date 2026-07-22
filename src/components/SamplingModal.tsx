@@ -17,6 +17,8 @@ export default function SamplingModal({
   excludedOf,
   /** not-yet-assigned count in scope (display only; QC starts after assignment) */
   unassignedOf,
+  /** Task-level anti-self-review: whether the chosen C is any A/B in this task */
+  cIsTaskAB,
   onClose,
   onConfirm,
 }: {
@@ -28,6 +30,7 @@ export default function SamplingModal({
   invalidOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
   excludedOf: (scope: "all_qas" | "by_qa", qaEmail: string | undefined, cReviewer: string | undefined) => number;
   unassignedOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
+  cIsTaskAB: (cReviewer: string | undefined) => boolean;
   onClose: () => void;
   onConfirm: (config: SamplingConfig) => void;
 }) {
@@ -59,6 +62,7 @@ export default function SamplingModal({
   const canStart =
     (scope === "all_qas" || !!qaEmail) &&
     !!cReviewer &&
+    !cIsTaskAB(cReviewer || undefined) &&
     thisTime > 0;
 
   const start = () => {
@@ -183,7 +187,12 @@ export default function SamplingModal({
                 </option>
               ))}
             </select>
-            <p className="mt-2 text-xs text-muted">防自审强制生效：复核人不能是该 case 的 A / B（任何人都不能绕过）。</p>
+            <p className="mt-2 text-xs text-muted">防自审强制生效：复核人不能是该 Task 中承担 A / B 的任何人（任何人都不能绕过）。</p>
+            {cReviewer && cIsTaskAB(cReviewer) && (
+              <p className="mt-1 rounded-md bg-danger-light px-2 py-1 text-xs text-danger">
+                该人员已在当前 Task 担任标注角色（A/B），不能担任 QC。
+              </p>
+            )}
           </div>
         </div>
 

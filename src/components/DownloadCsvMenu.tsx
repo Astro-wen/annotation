@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, FileText, FileBarChart, Upload } from "lucide-react";
+import { Download, FileText, FileBarChart } from "lucide-react";
 import { Button } from "./ui";
 import {
   downloadCsv,
@@ -17,7 +17,6 @@ import {
 } from "@/store/sessionStore";
 import { useRubricStore } from "@/store/rubricStore";
 import { qcAccuracy, formatAccuracy, type AccuracyPair } from "@/lib/scoring";
-import { assertNoPII } from "@/lib/pii";
 import { type CaseRow, type ResultGroup, RESULT_GROUPS, resultGroupOf } from "@/mock/types";
 
 type CaseWithFlow = { row: CaseRow; flow?: CaseFlow };
@@ -58,13 +57,10 @@ function mean(nums: number[]): string {
 
 export default function DownloadCsvMenu({
   taskId,
-  label = "Download / Export",
-  onExportToByteHi,
+  label = "Download",
 }: {
   taskId?: string;
   label?: string;
-  /** Optional downstream "Export to ByteHi" action, folded into this menu. */
-  onExportToByteHi?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [includeHistory, setIncludeHistory] = useState(false);
@@ -206,7 +202,7 @@ export default function DownloadCsvMenu({
         return [
           isSkip ? "" : String(s.scores[k] ?? ""),
           isSkip ? "true" : "false",
-          isSkip ? assertNoPII(s.skips![k]) : "",
+          isSkip ? s.skips![k] : "",
         ];
       });
 
@@ -218,18 +214,18 @@ export default function DownloadCsvMenu({
       for (const er of row.expectedResults) {
         const baseCells = [
           String(row.caseType),
-          assertNoPII(row.annotationCategory),
-          assertNoPII(row.category),
-          assertNoPII(row.mergeId),
-          assertNoPII(row.caseId),
-          assertNoPII(er.resultId),
+          row.annotationCategory,
+          row.category,
+          row.mergeId,
+          row.caseId,
+          er.resultId,
           er.resultType,
           resultGroupOf(er),
-          assertNoPII(er.serviceSubtypes.join("|")),
+          er.serviceSubtypes.join("|"),
           er.entryMode,
-          assertNoPII(er.coveredSourceIds.join("|")),
-          assertNoPII(status),
-          assertNoPII(finalSource),
+          er.coveredSourceIds.join("|"),
+          status,
+          finalSource,
         ];
 
         if (!includeHistory) {
@@ -239,7 +235,7 @@ export default function DownloadCsvMenu({
             ...baseCells,
             ...scoreCellsFor(s),
             s ? s.uxs.toFixed(2) : "",
-            assertNoPII(annotator),
+            annotator,
           ]);
           continue;
         }
@@ -264,11 +260,11 @@ export default function DownloadCsvMenu({
             ...baseCells,
             ...scoreCellsFor(s),
             s ? s.uxs.toFixed(2) : "",
-            assertNoPII(round.by ?? ""),
+            round.by ?? "",
             String(idx + 1),
             role,
             isFinal ? "true" : "false",
-            assertNoPII(round.at ?? ""),
+            round.at ?? "",
             configVersion,
           ]);
         });
@@ -346,27 +342,6 @@ export default function DownloadCsvMenu({
                 </span>
               </span>
             </button>
-
-            {onExportToByteHi && (
-              <>
-                <div className="my-1 border-t border-line" />
-                <button
-                  onClick={() => {
-                    onExportToByteHi();
-                    setOpen(false);
-                  }}
-                  className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left hover:bg-gray-50"
-                >
-                  <Upload className="mt-0.5 h-4 w-4 text-brand" />
-                  <span>
-                    <span className="block text-sm font-medium">Export to ByteHi</span>
-                    <span className="block text-xs text-subtle">
-                      下游提交动作：把当前生效结果回传 ByteHi（此处以 CSV 形式演示）
-                    </span>
-                  </span>
-                </button>
-              </>
-            )}
           </div>
         </>
       )}

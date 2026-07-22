@@ -29,6 +29,14 @@ export type ServiceSubtype =
 
 export type EntryMode = "DIRECT" | "TRANSFERRED";
 
+/** Which evidence a result is scored against: Session page or Ticket page. */
+export type EvidenceKind = "SESSION" | "TICKET";
+
+/** Evidence kind for a result group (Chatbot/Human IM → Session; Ticketbot/Human Ticket → Ticket). */
+export function evidenceKindOf(group: ResultGroup): EvidenceKind {
+  return group === "Ticketbot" || group === "Human Ticket" ? "TICKET" : "SESSION";
+}
+
 export type KnowledgeSource = "Skill" | "FAQ" | "SOP";
 
 /** Problem type identified by the annotator for Solution Adoption (R1/R2/R3). */
@@ -83,6 +91,8 @@ export function resultGroupOf(er: ExpectedResult): ResultGroup {
 export interface CaseRow {
   caseId: string;
   sessionId: string;
+  /** ticket evidence id (present when the case has a Ticketbot / Human Ticket result) */
+  ticketId?: string;
   taskId: string;
   caseType: CaseType;
   knowledgeSource: KnowledgeSource;

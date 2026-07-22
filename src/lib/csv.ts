@@ -1,4 +1,5 @@
 import type { AccuracyPair } from "@/lib/scoring";
+import { dimCounts, dimConsistent } from "@/lib/scoring";
 
 /** Mock CSV download — generates a tiny CSV string and triggers a browser download. */
 export function downloadCsv(filename: string, headers: string[], rows: string[][]) {
@@ -29,16 +30,15 @@ export const SQS_DIM_KEYS = [
 export const UEF_DIM_KEY = "user_expectation_fulfillment";
 
 /**
- * Raw per-dimension consistency rate over a set of baseline/current pairs.
- * consistency = the dimension score is identical between baseline and current.
- * Returns null for an empty set (never a fake 0).
+ * Per-dimension consistency rate over a set of baseline/current pairs.
+ * Skip-aware: a pair where either side Skipped this dimension is excluded from
+ * the denominator (aligned with scoring.ts). Returns null when no comparable
+ * sample exists (never a fake 0).
  */
 export function dimConsistency(pairs: AccuracyPair[], key: string): number | null {
-  if (pairs.length === 0) return null;
-  const consistent = pairs.filter(
-    (p) => (p.baseline[key] ?? null) === (p.current[key] ?? null),
-  ).length;
-  return consistent / pairs.length;
+  const counted = pairs.filter((p) => dimCounts(p, key));
+  if (counted.length === 0) return null;
+  return counted.filter((p) => dimConsistent(p, key)).length / counted.length;
 }
 
 /** Format a 0..1 rate as a percentage string, or "" when null. */

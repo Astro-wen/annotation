@@ -43,6 +43,14 @@ const SAMPLE_C: ConversationMessage[] = [
 
 const SAMPLES = [SAMPLE_A, SAMPLE_B, SAMPLE_C];
 
+// Ticket-side evidence (shown when scoring a Ticketbot / Human Ticket result).
+const TICKET_SAMPLE: ConversationMessage[] = [
+  { id: 1, role: "System", type: "evidence", text: "Ticket #TK · Category: Order fulfillment · Priority: P2 · Status: In progress" },
+  { id: 2, role: "User", type: "manual_input", text: "My order has not shipped for 5 days, please help expedite." },
+  { id: 3, role: "Assistant", type: "manual_input", text: "Thanks for reaching out — I've located your order and escalated it to the fulfillment team. Expected update within 24h." },
+  { id: 4, role: "System", type: "evidence", text: "Resolution logged · SLA: first response ≤ 24hr · Handled by human agent." },
+];
+
 // Assign a deterministic sample conversation to every case by index.
 export const conversations: Record<string, ConversationMessage[]> = Object.fromEntries(
   cases.map((c, i) => [c.caseId, SAMPLES[i % SAMPLES.length]]),
@@ -50,4 +58,9 @@ export const conversations: Record<string, ConversationMessage[]> = Object.fromE
 
 export function getConversation(caseId: string): ConversationMessage[] {
   return conversations[caseId] ?? SAMPLE_A;
+}
+
+/** Ticket-page evidence (Ticketbot / Human Ticket results). */
+export function getTicketThread(): ConversationMessage[] {
+  return TICKET_SAMPLE;
 }

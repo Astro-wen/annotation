@@ -80,7 +80,6 @@ export const defaultRubric: RubricDimension[] = [
     dimension: "Responsiveness",
     group: "SQS",
     options: [3, 0],
-    auto: true,
     enabled: true,
     builtin: true,
     reasons: [

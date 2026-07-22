@@ -1,15 +1,13 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Eye, Users, ShieldCheck, Database, UploadCloud, Settings as SettingsIcon, Trash2, Sparkles } from "lucide-react";
+import { Eye, Users, ShieldCheck, UploadCloud, Settings as SettingsIcon, Trash2, Sparkles } from "lucide-react";
 import Layout from "@/components/Layout";
 import { Button } from "@/components/ui";
 import Badge from "@/components/Badge";
 import AssignModal, { type TypeAvailability } from "@/components/AssignModal";
-import ImportByteHiModal from "@/components/ImportByteHiModal";
 import NewAnnotationTaskModal from "@/components/NewAnnotationTaskModal";
 import SamplingModal from "@/components/SamplingModal";
 import DownloadCsvMenu from "@/components/DownloadCsvMenu";
-import { downloadCsv } from "@/lib/csv";
 import { caseSets } from "@/mock/caseSets";
 import type { CaseSet, CaseType } from "@/mock/types";
 import {
@@ -17,10 +15,8 @@ import {
   type CaseFlow,
   type DistributeConfig,
   type SamplingConfig,
-  effectiveRound,
-  caseStatus,
 } from "@/store/sessionStore";
-import { useCurrentUserStore } from "@/lib/currentUser";
+import { useCurrentUserStore, shortNameOf } from "@/lib/currentUser";
 import { samePerson } from "@/lib/access";
 import { computeTaskStats, fmt, RESULT_GROUPS } from "@/lib/aggregate";
 import { formatAccuracy } from "@/lib/scoring";
@@ -30,8 +26,8 @@ export default function Home() {
   const navigate = useNavigate();
   const [rule, setRule] = useState<"old" | "new">("new");
   const [assignTask, setAssignTask] = useState<CaseSet | null>(null);
-  const [importModal, setImportModal] = useState<"bytehi" | "csv" | null>(null);
-  const [sourceFilter, setSourceFilter] = useState<"All" | "Import" | "ByteHi">("All");
+  const [csvOpen, setCsvOpen] = useState(false);
+  const [onlyMine, setOnlyMine] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [samplingTaskId, setSamplingTaskId] = useState<string | null>(null);
 
@@ -48,7 +44,27 @@ export default function Home() {
   const rowsOfTask = (taskId: string) =>
     cases.filter((c) => c.taskId === taskId).map((row) => ({ row, flow: flowOf(row.caseId) }));
 
-  const filteredTasks = caseSets.filter((t) => sourceFilter === "All" || t.source === sourceFilter);
+  // "只看我的 Task": tasks where the current user is A / B / C on any case.
+  const isMyTask = (taskId: string): boolean =>
+    rowsOfTask(taskId).some(({ flow }) => {
+      if (!flow) return false;
+      const people = [flow.aResult?.by, flow.aAssignee, flow.bResult?.by, flow.bAssignee, flow.cReviewer];
+      return people.some((p) => samePerson(p, currentEmail));
+    });
+
+  const filteredTasks = caseSets.filter((t) => !onlyMine || isMyTask(t.taskId));
+
+  // Distinct owners of a task (for the 负责人 column).
+  const ownersOf = (taskId: string) => {
+    const ab = new Set<string>();
+    const c = new Set<string>();
+    rowsOfTask(taskId).forEach(({ flow }) => {
+      if (!flow) return;
+      [flow.aResult?.by ?? flow.aAssignee, flow.bResult?.by ?? flow.bAssignee].forEach((p) => p && ab.add(p));
+      if (flow.cReviewer) c.add(flow.cReviewer);
+    });
+    return { ab: Array.from(ab), c: Array.from(c) };
+  };
 
   const taskModeOf = (taskId: string): "Normal" | "Back-to-Back" | undefined => {
     const f = flows.find((x) => x.taskId === taskId);
@@ -86,29 +102,6 @@ export default function Home() {
       return true;
     });
 
-  const exportTaskToByteHi = (task: CaseSet) => {
-    const rows = rowsOfTask(task.taskId).flatMap(({ row, flow }) => {
-      const eff = effectiveRound(flow);
-      return row.expectedResults.map((er) => {
-        const s = eff?.results[er.resultId];
-        return [
-          row.caseId,
-          row.sessionId,
-          er.resultType,
-          caseStatus(row, flow),
-          s ? s.sqsAvg.toFixed(2) : "",
-          s ? s.uefTotal.toFixed(2) : "",
-          s ? s.uxs.toFixed(2) : "",
-        ];
-      });
-    });
-    downloadCsv(
-      `${task.taskId}_bytehi_export.csv`,
-      ["case_id", "session_id", "result_type", "case_status", "sqs_avg", "uef_avg", "uxs"],
-      rows,
-    );
-  };
-
   return (
     <Layout>
       <div className="flex items-center justify-between border-b border-line bg-white px-6 py-4">
@@ -120,10 +113,7 @@ export default function Home() {
           <Button icon={Sparkles} onClick={() => loadDemo()}>
             Load Demo Sample
           </Button>
-          <Button icon={Database} onClick={() => setImportModal("bytehi")}>
-            Import from ByteHi
-          </Button>
-          <Button variant="primary" icon={UploadCloud} onClick={() => setImportModal("csv")}>
+          <Button variant="primary" icon={UploadCloud} onClick={() => setCsvOpen(true)}>
             Upload CSV
           </Button>
           <Button icon={SettingsIcon} onClick={() => navigate("/settings")}>
@@ -154,17 +144,9 @@ export default function Home() {
             ))}
           </div>
           {rule === "new" && (
-            <label className="flex items-center gap-1.5 text-xs text-subtle">
-              Source type
-              <select
-                value={sourceFilter}
-                onChange={(e) => setSourceFilter(e.target.value as typeof sourceFilter)}
-                className="h-8 rounded-md border border-line bg-white px-2 text-sm text-ink outline-none focus:border-brand"
-              >
-                <option value="All">All</option>
-                <option value="Import">Import</option>
-                <option value="ByteHi">ByteHi</option>
-              </select>
+            <label className="flex cursor-pointer items-center gap-1.5 rounded-md border border-line bg-white px-3 py-1.5 text-xs font-medium text-ink">
+              <input type="checkbox" checked={onlyMine} onChange={(e) => setOnlyMine(e.target.checked)} />
+              只看我的 Task
             </label>
           )}
           <span className="ml-auto text-xs text-subtle">Settings 与 Clear All Data 为 Demo-only，不属于 Phase 1 承诺范围。</span>
@@ -193,6 +175,7 @@ export default function Home() {
                     <th className="px-3 py-3 font-medium">Annotation Finish Rate</th>
                     <th className="px-3 py-3 font-medium">Back-to-Back Complete Rate</th>
                     <th className="px-3 py-3 font-medium">QC Complete</th>
+                    <th className="px-3 py-3 font-medium">负责人（A/B · QC）</th>
                     <th className="px-3 py-3 font-medium">SQS / UEF / UXS · QC Acc（按结果组）</th>
                     <th className="px-3 py-3 font-medium">Actions</th>
                   </tr>
@@ -259,6 +242,24 @@ export default function Home() {
                           )}
                         </td>
                         <td className="px-3 py-3">
+                          {(() => {
+                            const { ab, c } = ownersOf(t.taskId);
+                            if (ab.length === 0 && c.length === 0) return <span className="text-muted">—</span>;
+                            return (
+                              <div className="space-y-0.5 text-xs">
+                                <div>
+                                  <span className="text-[10px] uppercase text-muted">A/B</span>{" "}
+                                  {ab.length ? ab.map(shortNameOf).join("、") : <span className="text-muted">—</span>}
+                                </div>
+                                <div>
+                                  <span className="text-[10px] uppercase text-muted">QC</span>{" "}
+                                  {c.length ? <span className="text-brand">{c.map(shortNameOf).join("、")}</span> : <span className="text-muted">—</span>}
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </td>
+                        <td className="px-3 py-3">
                           <table className="text-[11px]">
                             <thead>
                               <tr className="text-[9px] uppercase text-muted">
@@ -291,12 +292,12 @@ export default function Home() {
                               Detail
                             </Button>
                             <Button variant="ghost" icon={Users} onClick={() => setAssignTask(t)}>
-                              Assign
+                              Batch Assign
                             </Button>
                             <Button variant="ghost" icon={ShieldCheck} onClick={() => setSamplingTaskId(t.taskId)}>
                               Sampling
                             </Button>
-                            <DownloadCsvMenu taskId={t.taskId} label="Download / Export" onExportToByteHi={() => exportTaskToByteHi(t)} />
+                            <DownloadCsvMenu taskId={t.taskId} label="Download" />
                           </div>
                         </td>
                       </tr>
@@ -366,10 +367,20 @@ export default function Home() {
             }
             return true;
           }).length;
+        // Task-level anti-self-review: the chosen C cannot be any A/B in this task.
+        const cIsTaskAB = (c: string | undefined) => {
+          if (!c) return false;
+          return rowsOfTask(samplingTaskId).some(({ flow }) => {
+            const aP = flow?.aResult?.by ?? flow?.aAssignee;
+            const bP = flow?.bResult?.by ?? flow?.bAssignee;
+            return samePerson(c, aP) || samePerson(c, bP);
+          });
+        };
         return (
           <SamplingModal
             taskName={meta.taskName}
             currentEmail={currentEmail}
+            cIsTaskAB={cIsTaskAB}
             effectiveOf={effectiveOf}
             alreadySampledOf={alreadySampledOf}
             availableOf={availableOf}
@@ -391,16 +402,7 @@ export default function Home() {
         );
       })()}
 
-      {importModal === "bytehi" && (
-        <ImportByteHiModal
-          onClose={() => setImportModal(null)}
-          onConfirm={(task) => {
-            setImportModal(null);
-            navigate(`/task/${task.taskId}`);
-          }}
-        />
-      )}
-      {importModal === "csv" && <NewAnnotationTaskModal onClose={() => setImportModal(null)} />}
+      {csvOpen && <NewAnnotationTaskModal onClose={() => setCsvOpen(false)} />}
 
       {resetOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={() => setResetOpen(false)}>

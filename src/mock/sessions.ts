@@ -105,10 +105,13 @@ function generateTask(t: TaskSeed): CaseRow[] {
     const caseId = `${t.taskId}-C${String(idx).padStart(3, "0")}`;
     const expectedResults = expectedResultsForType(caseType, caseId);
     const transferToHuman = expectedResults.some((r) => r.resultType === "Human" && r.entryMode === "TRANSFERRED");
+    // A ticket evidence id exists when the case has a Ticketbot / Human Ticket result.
+    const hasTicket = expectedResults.some((r) => r.serviceSubtypes.some((s) => s === "TICKETBOT" || s === "HUMAN_TICKET"));
 
     rows.push({
       caseId,
       sessionId,
+      ticketId: hasTicket ? `TK-${t.seed}-${String(idx).padStart(4, "0")}` : undefined,
       taskId: t.taskId,
       caseType,
       knowledgeSource: SOURCES[Math.floor(rng() * SOURCES.length)],

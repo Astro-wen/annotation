@@ -52,20 +52,23 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
         <div className="flex items-center gap-4 text-xs text-subtle">
           <span className="hidden md:inline">Config v{configVersion}</span>
-          <div className="flex items-center gap-2 rounded-md border border-line bg-page px-2 py-1">
-            <span className="hidden text-[11px] uppercase tracking-wide md:inline">Account</span>
-            <select
-              value={currentEmail}
-              onChange={(e) => setCurrentEmail(e.target.value)}
-              className="h-7 rounded-md border border-line bg-white px-2 text-xs font-medium text-ink outline-none focus:border-brand"
-            >
-              {USER_OPTIONS.map((user) => (
-                <option key={user.email} value={user.email}>
-                  {user.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* Account switcher is Demo-only (dev builds); hidden in production. */}
+          {import.meta.env.DEV && (
+            <div className="flex items-center gap-2 rounded-md border border-line bg-page px-2 py-1">
+              <span className="hidden text-[11px] uppercase tracking-wide md:inline">Account · Demo</span>
+              <select
+                value={currentEmail}
+                onChange={(e) => setCurrentEmail(e.target.value)}
+                className="h-7 rounded-md border border-line bg-white px-2 text-xs font-medium text-ink outline-none focus:border-brand"
+              >
+                {USER_OPTIONS.map((user) => (
+                  <option key={user.email} value={user.email}>
+                    {user.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <ClipboardCheck className="h-4 w-4 text-brand" />
             <span className="font-medium text-ink">

@@ -1,13 +1,13 @@
 import { useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, Ban, ChevronDown, ChevronRight } from "lucide-react";
+import { ArrowLeft, Ban } from "lucide-react";
 import Layout from "@/components/Layout";
 import ChatThread from "@/components/ChatThread";
 import { ScoreRow } from "@/components/ScorePanel";
 import Badge from "@/components/Badge";
-import { getConversation } from "@/mock/conversation";
+import { getConversation, getTicketThread } from "@/mock/conversation";
 import { executionOptions } from "@/mock/settings";
-import { type ExpectedResult, type ProblemType, type ResultScore, type ReviewRole, resultGroupOf } from "@/mock/types";
+import { type ExpectedResult, type ProblemType, type ResultScore, type ReviewRole, resultGroupOf, evidenceKindOf } from "@/mock/types";
 import { useRubricStore } from "@/store/rubricStore";
 import { useSessionStore, type RoundResult } from "@/store/sessionStore";
 import { useCurrentUserStore, isViewer, shortNameOf } from "@/lib/currentUser";
@@ -19,11 +19,6 @@ const PROBLEM_TYPES: { value: ProblemType; label: string }[] = [
   { value: "R2", label: "R2 Personalized Info" },
   { value: "R3", label: "R3 Operation" },
 ];
-
-// Mock auto-scored Responsiveness (system-recognized, read-only).
-function autoResponsiveness(): number {
-  return 3;
-}
 
 export default function Annotation() {
   const { sessionId = "" } = useParams();
@@ -65,19 +60,19 @@ export default function Annotation() {
     return false;
   }, [flow, role, currentEmail]);
 
-  // Per-result score state: resultId -> { scores, reasons, skips, problemType }
+  // Per-result score state: resultId -> { scores, reasons, skips, problemType }.
+  // Every dimension starts blank — Responsiveness is a manual, optional field
+  // (no auto scoring in Phase 1); C's card is also blank (no A/B prefill).
   const [state, setState] = useState<Record<string, { scores: Record<string, number>; reasons: Record<string, string>; skips: Record<string, string>; problemType?: ProblemType }>>(() => {
     const init: Record<string, { scores: Record<string, number>; reasons: Record<string, string>; skips: Record<string, string>; problemType?: ProblemType }> = {};
     for (const er of caseRow?.expectedResults ?? []) {
-      // Responsiveness auto-scored; everything else empty. A/B blind, C blank.
-      init[er.resultId] = { scores: { responsiveness: autoResponsiveness() }, reasons: {}, skips: {} };
+      init[er.resultId] = { scores: {}, reasons: {}, skips: {} };
     }
     return init;
   });
 
-  // Collapse state per result card (卷子). Default: all expanded.
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const toggleCard = (rid: string) => setCollapsed((c) => ({ ...c, [rid]: !c[rid] }));
+  // Active result tab (the single switch point for evidence + scoring object).
+  const [activeResultId, setActiveResultId] = useState<string>(caseRow?.expectedResults[0]?.resultId ?? "");
 
   if (!caseRow) {
     return (
@@ -94,12 +89,8 @@ export default function Annotation() {
     viewOnly ||
     (role !== "C" && !!flow?.finalizedBaseline);
 
-  // C reference (read-only frozen Finalized Baseline; no A/B raw diff).
-  const baseline = flow?.sampledBaseline ?? flow?.finalizedBaseline;
-
   // Per-dimension A/B reference for the C reviewer. With parallel QC, A/B may not
-  // have scored yet — show "—" then; once they submit (or a baseline exists), show
-  // each side's value (number / "Skip"). Only meaningful while reviewing as C.
+  // have scored yet — show "—" then; once they submit, show each side's value.
   const refValue = (round: RoundResult | undefined, resultId: string, dimKey: string): string => {
     const s = round?.results?.[resultId];
     if (!s) return "—";
@@ -113,8 +104,8 @@ export default function Annotation() {
     const b = flow?.mode === "Back-to-Back" ? refValue(flow?.bResult, resultId, dimKey) : null;
     return (
       <p className="mb-1 font-mono text-[11px] text-muted">
-        标注员1（A）={a}
-        {b !== null && <> · 标注员2（B）={b}</>}
+        A={a}
+        {b !== null && <> · B={b}</>}
       </p>
     );
   };
@@ -154,20 +145,18 @@ export default function Annotation() {
   const setSkipReason = (rid: string, dimKey: string, reason: string) =>
     setState((prev) => ({ ...prev, [rid]: { ...prev[rid], skips: { ...prev[rid].skips, [dimKey]: reason } } }));
 
-  // Whether all cards are complete enough to submit.
-  const requiredDims = sqsDims.concat(uefDims).filter((d) => !d.auto); // responsiveness auto excluded
+  // Responsiveness is optional; everything else must be scored or Skipped.
+  const requiredDims = sqsDims.concat(uefDims).filter((d) => d.key !== "responsiveness");
 
   const cardComplete = (er: ExpectedResult): boolean => {
     const st = state[er.resultId];
     if (!st) return false;
-    // Solution Adoption needs a problem type first (unless it is Skipped).
     const saSkipped = st.skips["solution_adoption"] !== undefined;
     const needsPT = sqsDims.some((d) => d.key === "solution_adoption");
     if (needsPT && !saSkipped && !st.problemType) return false;
-    // Each dimension must be either scored or Skipped (with a reason).
     return requiredDims.every((d) => {
       const skipped = st.skips[d.key] !== undefined;
-      if (skipped) return !!st.skips[d.key]; // must have a Skip Reason
+      if (skipped) return !!st.skips[d.key];
       return st.scores[d.key] !== undefined;
     });
   };
@@ -204,7 +193,13 @@ export default function Annotation() {
     );
   }
 
-  const conversation = getConversation(caseRow.caseId);
+  // Active result + its evidence (Session vs Ticket — the same tab drives both).
+  const activeResult = caseRow.expectedResults.find((er) => er.resultId === activeResultId) ?? caseRow.expectedResults[0];
+  const activeGroup = resultGroupOf(activeResult);
+  const activeEvidence = evidenceKindOf(activeGroup);
+  const evidenceThread = activeEvidence === "TICKET" ? getTicketThread() : getConversation(caseRow.caseId);
+  const st = state[activeResult.resultId];
+  const preview = computeResultScore(st.scores, dims, weights);
 
   return (
     <Layout>
@@ -219,165 +214,143 @@ export default function Annotation() {
         </div>
       </div>
 
-      <div className="flex min-h-[calc(100vh-6.5rem)]">
-        {/* Left 60% evidence */}
+      {/* Result Tabs — the single switch for both evidence and scoring object. */}
+      <div className="flex items-center gap-1 border-b border-line bg-white px-6 pt-2">
+        {caseRow.expectedResults.map((er) => {
+          const g = resultGroupOf(er);
+          const active = er.resultId === activeResult.resultId;
+          return (
+            <button
+              key={er.resultId}
+              onClick={() => setActiveResultId(er.resultId)}
+              className={`flex items-center gap-1.5 rounded-t-md border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+                active ? "border-brand text-brand" : "border-transparent text-subtle hover:text-ink"
+              }`}
+            >
+              {g}
+              <span className={`rounded px-1 text-[10px] font-normal ${active ? "bg-brand-light text-brand" : "bg-page text-muted"}`}>
+                {evidenceKindOf(g) === "TICKET" ? "Ticket" : "Session"}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex min-h-[calc(100vh-8.5rem)]">
+        {/* Left 60% evidence — follows the active tab. */}
         <div className="w-3/5 border-r border-line p-5">
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink">
-            Evidence · Conversation
+            Evidence · {activeEvidence === "TICKET" ? "Ticket" : "Conversation"}
             <Badge tone="neutral">{caseRow.knowledgeSource}</Badge>
-            <span className="font-mono text-xs text-muted">{caseRow.sessionId}</span>
+            <span className="font-mono text-xs text-muted">
+              {activeEvidence === "TICKET" ? (caseRow.ticketId ?? "—") : caseRow.sessionId}
+            </span>
           </div>
           <div className="mb-3 rounded-lg border border-line bg-page px-3 py-2 text-xs text-subtle">
-            Language {caseRow.language} · Region {caseRow.regionCode} · Type {caseRow.caseType} · {caseRow.annotationCategory}
-            <span className="ml-2 text-[11px]">PII 已脱敏为占位符（[EMAIL]/[PHONE]/[ADDRESS]）</span>
+            Language {caseRow.language} · Region {caseRow.regionCode} · {caseRow.annotationCategory}
           </div>
-          <ChatThread messages={conversation} />
+          <ChatThread messages={evidenceThread} />
         </div>
 
-        {/* Right 40% scoring */}
+        {/* Right 40% scoring — the active result's single card. */}
         <div className="w-2/5 overflow-y-auto bg-white">
-          <div className="sticky top-0 z-10 border-b border-line bg-white px-4 py-3">
-            <p className="text-sm font-semibold text-ink">
-              评分区（{caseRow.expectedResults.length} 张评分卡）
-            </p>
-            <p className="text-xs text-subtle">
-              Chatbot / Ticketbot → AI 评分卷；Human → Human 评分卷。一次提交完成全部卡片。
-            </p>
+          <div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-page px-4 py-3">
+            <div>
+              <p className="text-sm font-semibold text-ink">{activeGroup} Result</p>
+              <p className="text-xs text-subtle">{caseRow.expectedResults.length} 个结果 · 共用同一套评分卷 · {activeResult.entryMode}</p>
+            </div>
+            <span className="font-mono text-xs text-brand">
+              SQS {preview.sqsAvg.toFixed(2)} · UEF {preview.uefTotal.toFixed(2)} · UXS {preview.uxs.toFixed(2)}
+            </span>
           </div>
 
-          {/* C reference panel: read-only frozen baseline */}
-          {role === "C" && baseline && (
-            <div className="border-b border-line bg-brand-light/40 px-4 py-3">
-              <p className="mb-2 text-xs font-semibold text-brand">冻结的定稿基线（只读参考，不展示原始分歧）</p>
-              {caseRow.expectedResults.map((er) => {
-                const s = baseline.results[er.resultId];
-                return (
-                  <div key={er.resultId} className="mb-1 flex items-center justify-between text-xs">
-                    <span className="text-subtle">{resultGroupOf(er)}</span>
-                    <span className="font-mono text-ink">
-                      {s ? `SQS ${s.sqsAvg.toFixed(2)} · UEF ${s.uefTotal.toFixed(2)} · UXS ${s.uxs.toFixed(2)}` : "—"}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {caseRow.expectedResults.map((er) => {
-            const st = state[er.resultId];
-            const sqsTotalPreview = computeResultScore(st.scores, dims, weights);
-            const isCollapsed = collapsed[er.resultId];
-            return (
-              <div key={er.resultId} className="border-b-4 border-line">
-                {/* Card header — click to collapse/expand this 评分卷 (like SQS/UEF). */}
-                <button
-                  type="button"
-                  onClick={() => toggleCard(er.resultId)}
-                  className="flex w-full items-center justify-between bg-page px-4 py-2 text-left hover:bg-gray-100"
-                >
-                  <span className="flex items-center gap-1.5 text-sm font-semibold text-ink">
-                    {isCollapsed ? <ChevronRight className="h-4 w-4 text-subtle" /> : <ChevronDown className="h-4 w-4 text-subtle" />}
-                    {resultGroupOf(er)} <span className="text-xs font-normal text-muted">· {er.formTemplate} 评分卷 · {er.entryMode}</span>
-                  </span>
-                  <span className="font-mono text-xs text-brand">
-                    SQS {sqsTotalPreview.sqsAvg.toFixed(2)} · UEF {sqsTotalPreview.uefTotal.toFixed(2)} · UXS {sqsTotalPreview.uxs.toFixed(2)}
-                  </span>
-                </button>
-
-                {!isCollapsed && (
-                  <div className="pb-3">
-                    {/* SQS dimensions */}
-                    {sqsDims.map((d) => {
-                      const isExec = d.key === "execution_correctness";
-                      const isSA = d.key === "solution_adoption";
-                      const options = isExec ? executionOptions(caseRow.knowledgeSource) : d.options;
-                      const reasonOptions = d.reasons.filter((r) => options.includes(r.score));
-                      const skipped = st.skips[d.key] !== undefined;
-                      return (
-                        <div key={d.key} className="px-4 pt-3">
-                          {isSA && !skipped && (
-                            <div className="mb-2">
-                              <p className="mb-1 text-xs font-medium text-ink">Problem Type（先判定 R1/R2/R3 再打分）</p>
-                              <div className="flex gap-1">
-                                {PROBLEM_TYPES.map((pt) => (
-                                  <button
-                                    key={pt.value}
-                                    disabled={readOnly}
-                                    onClick={() => setProblemType(er.resultId, pt.value)}
-                                    className={`rounded-md border px-2 py-1 text-xs ${st.problemType === pt.value ? "border-brand bg-brand text-white" : "border-line text-subtle hover:border-brand/50"} disabled:opacity-50`}
-                                  >
-                                    {pt.label}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          {abRefLine(er.resultId, d.key)}
-                          <ScoreRow
-                            label={d.dimension}
-                            hint={
-                              isExec
-                                ? `按 Knowledge Source 联动：${caseRow.knowledgeSource === "Skill" ? "Skill 3/2/1/0" : "FAQ/SOP 3/1/0（无 2 档）"}`
-                                : isSA
-                                  ? `${st.problemType ?? "R?"} · scored by R1 / R2 / R3 resolution`
-                                  : undefined
-                            }
-                            options={options}
-                            value={st.scores[d.key] ?? null}
-                            onChange={(v) => setScore(er.resultId, d.key, v)}
-                            disabled={readOnly || (isSA && !st.problemType && !skipped) || !!d.auto}
-                            reason={st.reasons[d.key] ?? ""}
-                            onReasonChange={(v) => setReason(er.resultId, d.key, v)}
-                            reasonOptions={reasonOptions}
-                            skippable={!d.auto}
-                            skipped={skipped}
-                            skipReason={st.skips[d.key] ?? ""}
-                            skipReasons={skipReasonOptions}
-                            onToggleSkip={() => toggleSkip(er.resultId, d.key)}
-                            onSkipReasonChange={(v) => setSkipReason(er.resultId, d.key, v)}
-                          />
-                          {d.auto && (
-                            <p className="-mt-2 mb-2 text-[11px] text-muted">系统自动识别，只读直接给值：{st.scores[d.key] ?? "—"}</p>
-                          )}
-                        </div>
-                      );
-                    })}
-
-                    {/* UEF dimension */}
-                    {uefDims.map((d) => {
-                      const skipped = st.skips[d.key] !== undefined;
-                      return (
-                        <div key={d.key} className="px-4 pt-3">
-                          {abRefLine(er.resultId, d.key)}
-                          <ScoreRow
-                            label={`UEF · ${d.dimension}`}
-                            options={d.options}
-                            value={st.scores[d.key] ?? null}
-                            onChange={(v) => setScore(er.resultId, d.key, v)}
+          <div className="pb-3">
+            {/* SQS dimensions */}
+            {sqsDims.map((d) => {
+              const isExec = d.key === "execution_correctness";
+              const isSA = d.key === "solution_adoption";
+              const isResp = d.key === "responsiveness";
+              const options = isExec ? executionOptions(caseRow.knowledgeSource) : d.options;
+              const reasonOptions = d.reasons.filter((r) => options.includes(r.score));
+              const skipped = st.skips[d.key] !== undefined;
+              return (
+                <div key={d.key} className="px-4 pt-3">
+                  {isSA && !skipped && (
+                    <div className="mb-2">
+                      <p className="mb-1 text-xs font-medium text-ink">Problem Type（先判定 R1/R2/R3 再打分）</p>
+                      <div className="flex gap-1">
+                        {PROBLEM_TYPES.map((pt) => (
+                          <button
+                            key={pt.value}
                             disabled={readOnly}
-                            reason={st.reasons[d.key] ?? ""}
-                            onReasonChange={(v) => setReason(er.resultId, d.key, v)}
-                            reasonOptions={d.reasons}
-                            skippable
-                            skipped={skipped}
-                            skipReason={st.skips[d.key] ?? ""}
-                            skipReasons={skipReasonOptions}
-                            onToggleSkip={() => toggleSkip(er.resultId, d.key)}
-                            onSkipReasonChange={(v) => setSkipReason(er.resultId, d.key, v)}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                            onClick={() => setProblemType(activeResult.resultId, pt.value)}
+                            className={`rounded-md border px-2 py-1 text-xs ${st.problemType === pt.value ? "border-brand bg-brand text-white" : "border-line text-subtle hover:border-brand/50"} disabled:opacity-50`}
+                          >
+                            {pt.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {abRefLine(activeResult.resultId, d.key)}
+                  <ScoreRow
+                    label={isResp ? `${d.dimension}（选填）` : d.dimension}
+                    hint={
+                      isExec
+                        ? `按 Knowledge Source 联动：${caseRow.knowledgeSource === "Skill" ? "Skill 3/2/1/0" : "FAQ/SOP 3/1/0（无 2 档）"}`
+                        : isSA
+                          ? `${st.problemType ?? "R?"} · scored by R1 / R2 / R3 resolution`
+                          : undefined
+                    }
+                    options={options}
+                    value={st.scores[d.key] ?? null}
+                    onChange={(v) => setScore(activeResult.resultId, d.key, v)}
+                    disabled={readOnly || (isSA && !st.problemType && !skipped)}
+                    reason={st.reasons[d.key] ?? ""}
+                    onReasonChange={(v) => setReason(activeResult.resultId, d.key, v)}
+                    reasonOptions={reasonOptions}
+                    skippable
+                    skipped={skipped}
+                    skipReason={st.skips[d.key] ?? ""}
+                    skipReasons={skipReasonOptions}
+                    onToggleSkip={() => toggleSkip(activeResult.resultId, d.key)}
+                    onSkipReasonChange={(v) => setSkipReason(activeResult.resultId, d.key, v)}
+                  />
+                </div>
+              );
+            })}
+
+            {/* UEF dimension */}
+            {uefDims.map((d) => {
+              const skipped = st.skips[d.key] !== undefined;
+              return (
+                <div key={d.key} className="px-4 pt-3">
+                  {abRefLine(activeResult.resultId, d.key)}
+                  <ScoreRow
+                    label={`UEF · ${d.dimension}`}
+                    options={d.options}
+                    value={st.scores[d.key] ?? null}
+                    onChange={(v) => setScore(activeResult.resultId, d.key, v)}
+                    disabled={readOnly}
+                    reason={st.reasons[d.key] ?? ""}
+                    onReasonChange={(v) => setReason(activeResult.resultId, d.key, v)}
+                    reasonOptions={d.reasons}
+                    skippable
+                    skipped={skipped}
+                    skipReason={st.skips[d.key] ?? ""}
+                    skipReasons={skipReasonOptions}
+                    onToggleSkip={() => toggleSkip(activeResult.resultId, d.key)}
+                    onSkipReasonChange={(v) => setSkipReason(activeResult.resultId, d.key, v)}
+                  />
+                </div>
+              );
+            })}
+          </div>
 
           {!readOnly && (
             <div className="sticky bottom-0 flex items-center justify-between border-t border-line bg-white px-4 py-3">
               <span className="text-xs text-subtle">
-                {allComplete ? "全部评分卡已完成，可提交" : "请完成全部评分卡（含 Problem Type）后提交"}
+                {allComplete ? "全部结果已完成，可提交" : "请完成全部结果卡（含 Problem Type）后提交"}
               </span>
               <button
                 disabled={!allComplete}
