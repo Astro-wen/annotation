@@ -89,8 +89,12 @@ export default function Annotation() {
     viewOnly ||
     (role !== "C" && !!flow?.finalizedBaseline);
 
-  // Per-dimension A/B reference for the C reviewer. With parallel QC, A/B may not
-  // have scored yet — show "—" then; once they submit, show each side's value.
+  // QC reference: C sees the FINALIZED result (拉齐后的定稿 / Normal 的 A 定稿),
+  // not the raw A/B answers. No time ordering — the reference box always shows,
+  // but only carries values once a Finalized Baseline exists:
+  //   - Normal: A submitted → baseline exists → show values.
+  //   - Back-to-Back reconciled (or A/B auto-agreed) → baseline exists → show.
+  //   - Back-to-Back not reconciled yet / A has no answer → no baseline → all "—".
   const refValue = (round: RoundResult | undefined, resultId: string, dimKey: string): string => {
     const s = round?.results?.[resultId];
     if (!s) return "—";
@@ -100,12 +104,11 @@ export default function Annotation() {
   const showAbRef = role === "C";
   const abRefLine = (resultId: string, dimKey: string) => {
     if (!showAbRef) return null;
-    const a = refValue(flow?.aResult, resultId, dimKey);
-    const b = flow?.mode === "Back-to-Back" ? refValue(flow?.bResult, resultId, dimKey) : null;
+    // Only the finalized (reconciled / Normal-A) result is shown;未定稿则全横杠。
+    const v = flow?.finalizedBaseline ? refValue(flow.finalizedBaseline, resultId, dimKey) : "—";
     return (
       <p className="mb-1 font-mono text-[11px] text-muted">
-        标注={a}
-        {b !== null && <> · 复评={b}</>}
+        定稿参考={v}
       </p>
     );
   };
