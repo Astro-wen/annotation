@@ -11,12 +11,8 @@ export default function SamplingModal({
   alreadySampledOf,
   /** assignment-ready cases assignable to the chosen C (anti-self-review applied) */
   availableOf,
-  /** invalid count in scope (display) */
-  invalidOf,
   /** anti-self-review excluded count for chosen C (display) */
   excludedOf,
-  /** not-yet-assigned count in scope (display only; QC starts after assignment) */
-  unassignedOf,
   /** Task-level anti-self-review: whether the chosen C is any A/B in this task */
   cIsTaskAB,
   onClose,
@@ -27,9 +23,7 @@ export default function SamplingModal({
   effectiveOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
   alreadySampledOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
   availableOf: (scope: "all_qas" | "by_qa", qaEmail: string | undefined, cReviewer: string | undefined) => number;
-  invalidOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
   excludedOf: (scope: "all_qas" | "by_qa", qaEmail: string | undefined, cReviewer: string | undefined) => number;
-  unassignedOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
   cIsTaskAB: (cReviewer: string | undefined) => boolean;
   onClose: () => void;
   onConfirm: (config: SamplingConfig) => void;
@@ -45,9 +39,7 @@ export default function SamplingModal({
   const effective = effectiveOf(scope, scopeQa);
   const alreadySampled = alreadySampledOf(scope, scopeQa);
   const available = availableOf(scope, scopeQa, cReviewer || undefined);
-  const invalid = invalidOf(scope, scopeQa);
   const excluded = excludedOf(scope, scopeQa, cReviewer || undefined);
-  const unassigned = unassignedOf(scope, scopeQa);
 
   // How many cases this action will sample (percentage counts against effective
   // total; absolute is a direct count), capped by what's currently available.
@@ -89,15 +81,6 @@ export default function SamplingModal({
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5 text-sm">
-          <div className="rounded-lg bg-page px-4 py-3">
-            Available to sample:{" "}
-            <span className="font-mono font-semibold text-ink">{available}</span> of{" "}
-            <span className="font-mono font-semibold text-ink">{effective}</span> effective case(s)
-            <div className="mt-1 text-xs text-subtle">
-              Invalid excluded: {invalid} · 未分配（不可抽样）: {unassigned} · 防自审排除: {excluded}
-            </div>
-          </div>
-
           {/* Scope */}
           <div>
             <p className="mb-1.5 font-medium text-ink">Scope</p>
@@ -183,7 +166,7 @@ export default function SamplingModal({
                 </option>
               ))}
             </select>
-            {cReviewer && cIsTaskAB(cReviewer) && (
+            {cReviewer && cIsTaskAB(cReviewer) && excluded > 0 && (
               <p className="mt-2 rounded-md bg-danger-light px-2 py-1 text-xs text-danger">
                 该标注员在本 Task 已评过 {excluded} 个 case（防自审），仅会分配其未参与过的 case。
               </p>

@@ -335,18 +335,6 @@ export default function Home() {
         const effectiveOf = (scope: "all_qas" | "by_qa", qa?: string) => scopeRows(samplingTaskId, scope, qa).length;
         const alreadySampledOf = (scope: "all_qas" | "by_qa", qa?: string) =>
           scopeRows(samplingTaskId, scope, qa).filter(({ flow }) => flow?.sampledForQC).length;
-        const invalidOf = (scope: "all_qas" | "by_qa", qa?: string) =>
-          rowsOfTask(samplingTaskId).filter(({ row, flow }) => {
-            if (!row.invalid) return false;
-            if (scope === "by_qa" && qa) {
-              const aP = flow?.aResult?.by ?? flow?.aAssignee;
-              const bP = flow?.bResult?.by ?? flow?.bAssignee;
-              return samePerson(aP, qa) || samePerson(bP, qa);
-            }
-            return true;
-          }).length;
-        const unassignedOf = (scope: "all_qas" | "by_qa", qa?: string) =>
-          scopeRows(samplingTaskId, scope, qa).filter(({ flow }) => !ready(flow)).length;
         const excludedOf = (scope: "all_qas" | "by_qa", qa: string | undefined, c: string | undefined) => {
           if (!c) return 0;
           return scopeRows(samplingTaskId, scope, qa).filter(({ flow }) => {
@@ -383,9 +371,7 @@ export default function Home() {
             effectiveOf={effectiveOf}
             alreadySampledOf={alreadySampledOf}
             availableOf={availableOf}
-            invalidOf={invalidOf}
             excludedOf={excludedOf}
-            unassignedOf={unassignedOf}
             onClose={() => setSamplingTaskId(null)}
             onConfirm={(config: SamplingConfig) => {
               try {
