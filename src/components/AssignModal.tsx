@@ -116,10 +116,10 @@ export default function AssignModal({
       return "请至少填写一行 QA 与数量。";
     if (mode === "Back-to-Back") {
       const rows = pairRows.filter((r) => r.quantity > 0);
-      if (rows.some((r) => !r.aName.trim() || !r.bName.trim())) return "Back-to-Back 每一行都必须同时填写 标注员1 和 标注员2。";
+      if (rows.some((r) => !r.aName.trim() || !r.bName.trim())) return "Back-to-Back 每一行都必须同时填写 标注 和 复评。";
       // 防自审：同一行的两名标注员不能是同一人（任何人都不能绕过）。
       if (rows.some((r) => samePerson(r.aName, r.bName)))
-        return "防自审：同一行的 标注员1 与 标注员2 不能是同一个人。";
+        return "防自审：同一行的 标注 与 复评 不能是同一个人。";
     }
     return null;
   };
@@ -264,23 +264,23 @@ export default function AssignModal({
           ) : (
             <div className="rounded-lg border border-line p-4">
               <div className="mb-3 flex items-center justify-between">
-                <span className="text-sm font-semibold text-ink">标注员1 ｜ 标注员2 ｜ Quantity</span>
+                <span className="text-sm font-semibold text-ink">标注 ｜ 复评 ｜ Quantity</span>
                 <span className="text-xs text-subtle">
                   Remaining unassigned: <span className="font-mono font-semibold text-ink">{Math.max(0, totalRemaining - requested)}</span>
                 </span>
               </div>
               <div className="mb-2 flex gap-3 text-xs font-medium uppercase tracking-wide text-subtle">
-                <span className="flex-1">标注员1</span>
-                <span className="flex-1">标注员2</span>
+                <span className="flex-1">标注</span>
+                <span className="flex-1">复评</span>
                 <span className="w-24">Quantity</span>
               </div>
               {pairRows.map((row, i) => (
                 <div key={i} className="mb-2 flex items-start gap-3">
                   <div className="flex-1">
-                    <QaNameInput value={row.aName} placeholder="标注员1 姓名" onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, aName: v } : r)))} />
+                    <QaNameInput value={row.aName} placeholder="标注 姓名" onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, aName: v } : r)))} />
                   </div>
                   <div className="flex-1">
-                    <QaNameInput value={row.bName} placeholder="标注员2 姓名" onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, bName: v } : r)))} />
+                    <QaNameInput value={row.bName} placeholder="复评 姓名" onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, bName: v } : r)))} />
                   </div>
                   <input
                     type="number"

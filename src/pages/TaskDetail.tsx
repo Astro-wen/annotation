@@ -388,9 +388,9 @@ export default function TaskDetail() {
                     <td className="px-3 py-3">
                       {/* Final-level owners summary (details & re-assign live in A/B/C rows). */}
                       <div className="space-y-0.5 text-[11px]">
-                        <div><span className="text-muted">A</span> {shortNameOf(flow?.aAssignee)}</div>
-                        {isB2B && <div><span className="text-muted">B</span> {shortNameOf(flow?.bAssignee)}</div>}
-                        <div><span className="text-muted">C</span> {flow?.cReviewer ? <span className="text-brand">{shortNameOf(flow.cReviewer)}</span> : "—"}</div>
+                        <div><span className="text-muted">标注</span> {shortNameOf(flow?.aAssignee)}</div>
+                        {isB2B && <div><span className="text-muted">复评</span> {shortNameOf(flow?.bAssignee)}</div>}
+                        <div><span className="text-muted">QC</span> {flow?.cReviewer ? <span className="text-brand">{shortNameOf(flow.cReviewer)}</span> : "—"}</div>
                       </div>
                     </td>
                     <td className="px-3 py-3"><Badge tone={statusTone(status)}>{status}</Badge></td>
@@ -418,7 +418,7 @@ export default function TaskDetail() {
                       <td className="px-2 py-2"></td>
                       <td className="px-3 py-2">
                         <span className="font-medium text-ink">{shortNameOf(flow?.aAssignee)}</span>
-                        <Badge tone="neutral" className="ml-1">标注 A</Badge>
+                        <Badge tone="neutral" className="ml-1">标注</Badge>
                       </td>
                       <td className="px-3 py-2">{subtypeCell(row)}</td>
                       <td className="px-3 py-2"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
@@ -453,7 +453,7 @@ export default function TaskDetail() {
                       <td className="px-2 py-2"></td>
                       <td className="px-3 py-2">
                         <span className="font-medium text-ink">{shortNameOf(flow?.bAssignee)}</span>
-                        <Badge tone="neutral" className="ml-1">复评 B</Badge>
+                        <Badge tone="neutral" className="ml-1">复评</Badge>
                       </td>
                       <td className="px-3 py-2">{subtypeCell(row)}</td>
                       <td className="px-3 py-2"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
@@ -488,7 +488,7 @@ export default function TaskDetail() {
                       <td className="px-2 py-2"></td>
                       <td className="px-3 py-2">
                         <span className="font-medium text-ink">{shortNameOf(flow?.cReviewer)}</span>
-                        <Badge tone="brand" className="ml-1">复核 C</Badge>
+                        <Badge tone="brand" className="ml-1">QC</Badge>
                       </td>
                       <td className="px-3 py-2">{subtypeCell(row)}</td>
                       <td className="px-3 py-2"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
@@ -498,7 +498,7 @@ export default function TaskDetail() {
                       <td className="px-3 py-2">{uxsCell(row, flow?.cResult)}</td>
                       <td className="px-3 py-2"></td>
                       <td className="px-3 py-2"></td>
-                      <td className="px-3 py-2"><Badge tone={flow?.qcCompleted ? "success" : "warning"}>{flow?.qcCompleted ? "复核完成" : "待复核"}</Badge></td>
+                      <td className="px-3 py-2"><Badge tone={flow?.qcCompleted ? "success" : "warning"}>{flow?.qcCompleted ? "QC 完成" : "待 QC"}</Badge></td>
                       <td className="px-3 py-2">
                         {(() => {
                           const isMyC = samePerson(currentEmail, flow?.cReviewer);
@@ -518,7 +518,7 @@ export default function TaskDetail() {
                           const selfConflict = samePerson(currentEmail, flow?.aResult?.by) || samePerson(currentEmail, flow?.bResult?.by);
                           if (selfConflict) return <span className="text-muted">你已标过当前 session！</span>;
                           if (isMyC) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C`)} className="rounded-md bg-brand px-2 py-1 font-medium text-white">Do QC</button>;
-                          return <span className="text-muted">等待复核</span>;
+                          return <span className="text-muted">等待 QC</span>;
                         })()}
                       </td>
                     </tr>
@@ -607,7 +607,7 @@ export default function TaskDetail() {
                   <tr key={i} className="border-b border-line">
                     <td className="py-2 font-mono text-[11px] text-muted">{l.at}</td>
                     <td className="py-2 text-ink">{shortNameOf(l.operator)}</td>
-                    <td className="py-2 text-subtle">{l.role === "A" ? "标注" : l.role === "B" ? "复评" : l.role === "C" ? "复核" : "—"}</td>
+                    <td className="py-2 text-subtle">{l.role === "A" ? "标注" : l.role === "B" ? "复评" : l.role === "C" ? "QC" : "—"}</td>
                     <td className="py-2 text-ink">{l.action}{l.resultType ? `（${l.resultType}）` : ""}{l.detail ? <span className="block text-[10px] text-muted">{l.detail}</span> : null}</td>
                     <td className="py-2">
                       {l.version && l.snapshot ? (
@@ -792,7 +792,7 @@ function ReconcileModal({
                           <span className="flex-1 text-success">一致（{String(aVal)}）</span>
                         ) : (
                           <div className="flex flex-1 flex-wrap items-center gap-1">
-                            <span className="text-muted">标注员1={String(aVal)}，标注员2={String(bVal)} →</span>
+                            <span className="text-muted">标注={String(aVal)}，复评={String(bVal)} →</span>
                             {d.options.map((opt) => {
                               const sel = cur === opt;
                               return (

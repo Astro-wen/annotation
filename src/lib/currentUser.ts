@@ -20,20 +20,20 @@ export interface UserOption {
 export const USER_OPTIONS: UserOption[] = [
   {
     email: "editor.a@bytedance.com",
-    label: "标注员A",
-    shortName: "标注员A",
+    label: "标注员小艾",
+    shortName: "小艾",
     role: "editor",
   },
   {
     email: "editor.b@bytedance.com",
-    label: "标注员B",
-    shortName: "标注员B",
+    label: "标注员小贝",
+    shortName: "小贝",
     role: "editor",
   },
   {
     email: "editor.c@bytedance.com",
-    label: "标注员C",
-    shortName: "标注员C",
+    label: "标注员小茜",
+    shortName: "小茜",
     role: "editor",
   },
   {

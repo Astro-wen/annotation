@@ -174,7 +174,7 @@ export default function Home() {
                     <th className="px-3 py-3 font-medium">Annotation Finish Rate</th>
                     <th className="px-3 py-3 font-medium">Back-to-Back Complete Rate</th>
                     <th className="px-3 py-3 font-medium">QC Complete</th>
-                    <th className="px-3 py-3 font-medium">负责人（A/B · QC）</th>
+                    <th className="px-3 py-3 font-medium">负责人（标注 · QC）</th>
                     <th className="px-3 py-3 font-medium">SQS / UEF / UXS · QC Acc（按结果组）</th>
                     <th className="px-3 py-3 font-medium">Actions</th>
                   </tr>
@@ -247,7 +247,7 @@ export default function Home() {
                             return (
                               <div className="space-y-0.5 text-xs">
                                 <div>
-                                  <span className="text-[10px] uppercase text-muted">A/B</span>{" "}
+                                  <span className="text-[10px] uppercase text-muted">标注</span>{" "}
                                   {ab.length ? ab.map(shortNameOf).join("、") : <span className="text-muted">—</span>}
                                 </div>
                                 <div>

@@ -25,7 +25,7 @@ export default function Annotation() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const role = (params.get("role") as ReviewRole | null) ?? "A";
-  const roleLabelCN = role === "C" ? "复核" : role === "B" ? "复评" : "标注";
+  const roleLabelCN = role === "C" ? "QC" : role === "B" ? "复评" : "标注";
   const viewOnly = params.get("view") === "1";
 
   const currentEmail = useCurrentUserStore((s) => s.currentEmail);
@@ -104,8 +104,8 @@ export default function Annotation() {
     const b = flow?.mode === "Back-to-Back" ? refValue(flow?.bResult, resultId, dimKey) : null;
     return (
       <p className="mb-1 font-mono text-[11px] text-muted">
-        A={a}
-        {b !== null && <> · B={b}</>}
+        标注={a}
+        {b !== null && <> · 复评={b}</>}
       </p>
     );
   };
