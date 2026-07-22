@@ -62,7 +62,6 @@ export default function SamplingModal({
   const canStart =
     (scope === "all_qas" || !!qaEmail) &&
     !!cReviewer &&
-    !cIsTaskAB(cReviewer || undefined) &&
     thisTime > 0;
 
   const start = () => {
@@ -98,9 +97,6 @@ export default function SamplingModal({
               Invalid excluded: {invalid} · 未分配（不可抽样）: {unassigned} · 防自审排除: {excluded}
             </div>
           </div>
-          <p className="rounded-md bg-page px-3 py-2 text-xs text-subtle">
-            分配完成即可抽样并指派复核人（Normal 需 A 已分配，Back-to-Back 需 A、B 均已分配）；A/B 标注与复核并行，无需等待定稿。
-          </p>
 
           {/* Scope */}
           <div>
@@ -187,10 +183,9 @@ export default function SamplingModal({
                 </option>
               ))}
             </select>
-            <p className="mt-2 text-xs text-muted">防自审强制生效：复核人不能是该 Task 中承担 A / B 的任何人（任何人都不能绕过）。</p>
             {cReviewer && cIsTaskAB(cReviewer) && (
-              <p className="mt-1 rounded-md bg-danger-light px-2 py-1 text-xs text-danger">
-                该人员已在当前 Task 担任标注角色（A/B），不能担任 QC。
+              <p className="mt-2 rounded-md bg-danger-light px-2 py-1 text-xs text-danger">
+                该标注员在本 Task 已评过 {excluded} 个 case（防自审），仅会分配其未参与过的 case。
               </p>
             )}
           </div>

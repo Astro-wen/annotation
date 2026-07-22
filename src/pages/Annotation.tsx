@@ -257,7 +257,7 @@ export default function Annotation() {
           <div className="sticky top-0 z-10 flex items-center justify-between border-b border-line bg-page px-4 py-3">
             <div>
               <p className="text-sm font-semibold text-ink">{activeGroup} Result</p>
-              <p className="text-xs text-subtle">{caseRow.expectedResults.length} 个结果 · 共用同一套评分卷 · {activeResult.entryMode}</p>
+              <p className="text-xs text-subtle">{caseRow.expectedResults.length} 个结果 · {activeResult.entryMode}</p>
             </div>
             <span className="font-mono text-xs text-brand">
               SQS {preview.sqsAvg.toFixed(2)} · UEF {preview.uefTotal.toFixed(2)} · UXS {preview.uxs.toFixed(2)}

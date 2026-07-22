@@ -253,7 +253,6 @@ export default function TaskDetail() {
           </button>
           <h1 className="text-lg font-semibold text-ink">{meta.taskName}</h1>
           <p className="text-xs text-subtle">Detail · Session List · {taskId} · SQS (6) + UEF · User Experience Score (North Star) · Config {meta.ruleVersion}</p>
-          <p className="mt-0.5 text-[11px] text-muted">主行显示当前 Final Result（QC 优先于 A/B），展开可见 A / B / C 三行；A/B 被拉齐改动的维度显示为 <span className="line-through">原分</span> <span className="font-semibold text-brand">定稿分</span>。</p>
         </div>
         <DownloadCsvMenu taskId={taskId} label="Download CSV" />
       </div>

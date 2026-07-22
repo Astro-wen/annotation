@@ -149,7 +149,6 @@ export default function Home() {
               只看我的 Task
             </label>
           )}
-          <span className="ml-auto text-xs text-subtle">Settings 与 Clear All Data 为 Demo-only，不属于 Phase 1 承诺范围。</span>
         </div>
 
         {rule === "old" ? (

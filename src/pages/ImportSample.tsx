@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight, CheckCircle2, RotateCcw, Download, UploadCloud, Info } from "lucide-react";
+import { ArrowRight, CheckCircle2, RotateCcw, Download, UploadCloud } from "lucide-react";
 import Layout from "@/components/Layout";
 import { PageHeader, Button } from "@/components/ui";
 import Badge from "@/components/Badge";
@@ -51,7 +51,6 @@ export default function ImportSample() {
     <Layout>
       <PageHeader
         title="Import Sample"
-        subtitle="Phase 1：仅支持 CSV 上传（与 Data 下载共用同一份 Human Annotation Template）"
         actions={
           <Button variant="primary" icon={ArrowRight} onClick={() => navigate("/task/TASK-20260623-001")}>
             Go to Task Detail
@@ -86,15 +85,6 @@ export default function ImportSample() {
               <Download className="h-3.5 w-3.5" /> Download Human Annotation Template
             </button>
           </div>
-        </div>
-
-        {/* Recognition note */}
-        <div className="flex items-start gap-2 rounded-lg border border-brand/20 bg-brand-light px-4 py-3 text-sm text-brand">
-          <Info className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>
-            系统结合 <b>service type</b>（AI / Human）与 <b>service stage</b>（IM / Ticket）识别每条 Case 的服务结果，
-            归入 Chatbot / Human IM / Ticketbot / Human Ticket 四组，一条 Case 最多 4 项结果。识别结果由后端返回，页面只展示。
-          </span>
         </div>
 
         {/* Parse preview */}
