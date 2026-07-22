@@ -110,8 +110,10 @@ export default function TaskDetail() {
       return next;
     });
 
-  const expandableIds = taskCases
-    .filter((c) => flowOf(c.caseId)?.mode === "Back-to-Back" || flowOf(c.caseId)?.sampledForQC)
+  // Expandable = any case that has a flow (matches the row-level `expandable`),
+  // and is currently visible under the active filters.
+  const expandableIds = visibleCases
+    .filter((c) => !!flowOf(c.caseId))
     .map((c) => c.caseId);
   const allExpanded = expandableIds.length > 0 && expandableIds.every((id) => expandedRows.has(id));
   const toggleExpandAll = () => setExpandedRows(allExpanded ? new Set() : new Set(expandableIds));
