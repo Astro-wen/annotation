@@ -67,7 +67,6 @@ export default function TaskDetail() {
   const [fSource, setFSource] = useState("All");
   const [fProblem, setFProblem] = useState<"All" | ProblemType>("All");
   const [fStatus, setFStatus] = useState<(typeof PROCESS_STATUSES)[number]>("All");
-  const [fAnnotator, setFAnnotator] = useState("All");
   const [sqsExpanded, setSqsExpanded] = useState(false);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -84,16 +83,6 @@ export default function TaskDetail() {
   const sqsDims = rubricDims.filter((d) => d.group === "SQS");
   const uefDims = rubricDims.filter((d) => d.group === "UEF");
 
-  // Annotator options for the filter.
-  const annotatorOptions = useMemo(() => {
-    const set = new Set<string>();
-    taskCases.forEach((c) => {
-      const f = flowOf(c.caseId);
-      [f?.aResult?.by, f?.aAssignee, f?.bResult?.by, f?.bAssignee, f?.cReviewer].forEach((p) => p && set.add(p));
-    });
-    return Array.from(set);
-  }, [taskCases, flows]);
-
   const matchesFilters = (c: CaseRow): boolean => {
     const f = flowOf(c.caseId);
     const subtypes = c.expectedResults.flatMap((r) => r.serviceSubtypes);
@@ -107,10 +96,6 @@ export default function TaskDetail() {
     if (fStatus !== "All") {
       const st = caseStatus(c, f);
       if (fStatus === "待拉齐（Diff）" ? st !== "待拉齐（Diff）" : st !== fStatus) return false;
-    }
-    if (fAnnotator !== "All") {
-      const people = [f?.aResult?.by, f?.aAssignee, f?.bResult?.by, f?.bAssignee, f?.cReviewer];
-      if (!people.some((p) => samePerson(p, fAnnotator))) return false;
     }
     return true;
   };
@@ -138,14 +123,6 @@ export default function TaskDetail() {
       else next.add(caseId);
       return next;
     });
-
-  // Per-annotator accuracy readout (four result groups) when filtered by a person.
-  const annotatorAccuracy = fAnnotator !== "All"
-    ? RESULT_GROUPS.map((rt) => ({
-        rt,
-        acc: individualMetricsForType(taskCases.map((row) => ({ row, flow: flowOf(row.caseId) })), rt, fAnnotator).qcAccuracy,
-      }))
-    : null;
 
   // All participants (A/B annotators) and their four-group personal Accuracy —
   // shown directly at the top of Detail, no per-person filter required (spec §5.5).
@@ -276,7 +253,7 @@ export default function TaskDetail() {
           </button>
           <h1 className="text-lg font-semibold text-ink">{meta.taskName}</h1>
           <p className="text-xs text-subtle">Detail · Session List · {taskId} · SQS (6) + UEF · User Experience Score (North Star) · Config {meta.ruleVersion}</p>
-          <p className="mt-0.5 text-[11px] text-muted">展开 Back-to-Back 行后，被拉齐改动的维度显示为 <span className="line-through">原分</span> <span className="font-semibold text-brand">定稿分</span>。</p>
+          <p className="mt-0.5 text-[11px] text-muted">主行显示当前 Final Result（QC 优先于 A/B），展开可见 A / B / C 三行；A/B 被拉齐改动的维度显示为 <span className="line-through">原分</span> <span className="font-semibold text-brand">定稿分</span>。</p>
         </div>
         <DownloadCsvMenu taskId={taskId} label="Download CSV" />
       </div>
@@ -333,22 +310,8 @@ export default function TaskDetail() {
         <select value={fStatus} onChange={(e) => setFStatus(e.target.value as typeof fStatus)} className="h-8 rounded-md border border-line bg-white px-2 text-ink outline-none focus:border-brand">
           {PROCESS_STATUSES.map((v) => <option key={v} value={v}>{v === "All" ? "流程状态: All" : v}</option>)}
         </select>
-        <select value={fAnnotator} onChange={(e) => setFAnnotator(e.target.value)} className="h-8 rounded-md border border-line bg-white px-2 text-ink outline-none focus:border-brand">
-          <option value="All">Annotator: All</option>
-          {annotatorOptions.map((a) => <option key={a} value={a}>{shortNameOf(a)}</option>)}
-        </select>
         <span className="ml-auto text-subtle">{visibleCases.length} cases</span>
       </div>
-
-      {annotatorAccuracy && (
-        <div className="flex flex-wrap items-center gap-4 border-b border-line bg-page px-6 py-2 text-xs">
-          <span className="font-medium text-ink">{shortNameOf(fAnnotator)} 个人准确率：</span>
-          {annotatorAccuracy.map(({ rt, acc }) => (
-            <span key={rt} className="font-mono text-subtle">{rt}: <span className="text-brand">{formatAccuracy(acc)}</span></span>
-          ))}
-          <span className="text-muted">（双人评下会连带看到搭档一行，但顶部汇总只用被筛选者自己的原始答案）</span>
-        </div>
-      )}
 
       <div className="overflow-x-auto p-4">
         <table className="w-full text-sm">
@@ -376,21 +339,20 @@ export default function TaskDetail() {
             {visibleCases.map((row) => {
               const flow = flowOf(row.caseId);
               const isB2B = flow?.mode === "Back-to-Back";
-              const expandable = isB2B || !!flow?.sampledForQC;
+              // The main row is the Final Result; A/B/C live in the expandable rows.
+              // Expandable once the case has been assigned (has a flow).
+              const expandable = !!flow;
               const expanded = expandedRows.has(row.caseId);
               const status = caseStatus(row, flow);
               const eff = effectiveRound(flow);
-              // In expanded Back-to-Back, the main row represents 标注员A; once
-              // reconciled, show A's raw vs the reconciled Finalized Baseline so the
-              // 拉齐结果 is visible (struck-through original → final). Otherwise the
-              // main row shows the effective result as before.
-              const showAReconcile = isB2B && expanded && !!flow?.finalizedBaseline;
-              const mainRound = showAReconcile ? flow?.aResult : eff;
-              const mainFinal = showAReconcile ? flow?.finalizedBaseline : undefined;
               const invalid = row.invalid;
+              const isDiff = flow?.reconcileStatus === "Pending";
+              const canReconcile =
+                !invalid && isDiff &&
+                (samePerson(currentEmail, flow?.aResult?.by) || samePerson(currentEmail, flow?.bResult?.by));
               return (
                 <>
-                  {/* Main (A) row */}
+                  {/* Main row = Final Result (QC > Baseline > —); A/B/C in expand. */}
                   <tr key={row.caseId} className={`border-b border-line align-top ${invalid ? "bg-gray-50 opacity-60" : "hover:bg-page"}`}>
                     <td className="px-2 py-3">
                       <div className="flex items-center gap-1">
@@ -408,11 +370,11 @@ export default function TaskDetail() {
                     </td>
                     <td className="px-3 py-3">{subtypeCell(row)}</td>
                     <td className="px-3 py-3"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
-                    {sqsExpanded && sqsDims.map((d) => <td key={d.key} className="px-2 py-3">{dimCells(row, mainRound, d.key, mainFinal)}</td>)}
-                    <td className="px-3 py-3">{scoreCells(row, mainRound, "SQS", mainFinal)}</td>
-                    <td className="px-3 py-3">{scoreCells(row, mainRound, "UEF", mainFinal)}</td>
+                    {sqsExpanded && sqsDims.map((d) => <td key={d.key} className="px-2 py-3">{dimCells(row, eff, d.key)}</td>)}
+                    <td className="px-3 py-3">{scoreCells(row, eff, "SQS")}</td>
+                    <td className="px-3 py-3">{scoreCells(row, eff, "UEF")}</td>
                     <td className="px-3 py-3">
-                      {uxsCell(row, showAReconcile ? flow?.finalizedBaseline : eff)}
+                      {uxsCell(row, eff)}
                       {(() => {
                         // Final Result source label (spec §5.8): QC / Finalized Baseline / —.
                         const src = flow?.currentResult ? "QC" : flow?.finalizedBaseline ? "Finalized Baseline" : "—";
@@ -425,23 +387,19 @@ export default function TaskDetail() {
                     </td>
                     <td className="px-3 py-3"><Badge tone={row.transferToHuman ? "warning" : "neutral"}>{row.transferToHuman ? "Yes" : "No"}</Badge></td>
                     <td className="px-3 py-3">
-                      <button
-                        disabled={invalid || viewer || !!flow?.finalizedBaseline}
-                        onClick={() => setAssignModal({ caseId: row.caseId, slot: "A" })}
-                        className="text-xs text-brand hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
-                      >
-                        {flow?.aAssignee ? shortNameOf(flow.aAssignee) : "分配标注员"}
-                      </button>
+                      {/* Final-level owners summary (details & re-assign live in A/B/C rows). */}
+                      <div className="space-y-0.5 text-[11px]">
+                        <div><span className="text-muted">A</span> {shortNameOf(flow?.aAssignee)}</div>
+                        {isB2B && <div><span className="text-muted">B</span> {shortNameOf(flow?.bAssignee)}</div>}
+                        <div><span className="text-muted">C</span> {flow?.cReviewer ? <span className="text-brand">{shortNameOf(flow.cReviewer)}</span> : "—"}</div>
+                      </div>
                     </td>
                     <td className="px-3 py-3"><Badge tone={statusTone(status)}>{status}</Badge></td>
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1">
-                        {!invalid && flow?.reconcileStatus === "Pending" && (samePerson(currentEmail, flow.aResult?.by) || samePerson(currentEmail, flow.bResult?.by)) ? (
+                        {/* Back-to-Back Diff: a single Reconcile entry at the Final level. */}
+                        {canReconcile && (
                           <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 text-xs font-medium text-white">Reconcile</button>
-                        ) : (
-                          <button onClick={() => navigate(`/annotate/${row.sessionId}?role=A`)} className="text-xs text-brand hover:underline">
-                            {flow?.aResult ? "View" : "Annotate"}
-                          </button>
                         )}
                         <button onClick={() => setLogCaseId(row.caseId)} className="text-subtle hover:text-ink" title="Activity Log"><FileText className="h-4 w-4" /></button>
                         {canToggleInvalid(currentEmail, status) && (
@@ -455,13 +413,48 @@ export default function TaskDetail() {
                     </td>
                   </tr>
 
+                  {/* A row (expanded) */}
+                  {expanded && (
+                    <tr key={`${row.caseId}-A`} className="border-b border-line bg-gray-50 align-top text-xs">
+                      <td className="px-2 py-2"></td>
+                      <td className="px-3 py-2">
+                        <span className="font-medium text-ink">{shortNameOf(flow?.aAssignee)}</span>
+                        <Badge tone="neutral" className="ml-1">标注 A</Badge>
+                      </td>
+                      <td className="px-3 py-2">{subtypeCell(row)}</td>
+                      <td className="px-3 py-2"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
+                      {sqsExpanded && sqsDims.map((d) => <td key={d.key} className="px-2 py-2">{dimCells(row, flow?.aResult, d.key, isB2B ? flow?.finalizedBaseline : undefined)}</td>)}
+                      <td className="px-3 py-2">{scoreCells(row, flow?.aResult, "SQS", isB2B ? flow?.finalizedBaseline : undefined)}</td>
+                      <td className="px-3 py-2">{scoreCells(row, flow?.aResult, "UEF", isB2B ? flow?.finalizedBaseline : undefined)}</td>
+                      <td className="px-3 py-2">{uxsCell(row, flow?.aResult)}</td>
+                      <td className="px-3 py-2"></td>
+                      <td className="px-3 py-2">
+                        <button
+                          disabled={invalid || viewer || !!flow?.finalizedBaseline}
+                          onClick={() => setAssignModal({ caseId: row.caseId, slot: "A" })}
+                          className="text-brand hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
+                        >
+                          {flow?.aAssignee ? shortNameOf(flow.aAssignee) : "分配标注员"}
+                        </button>
+                      </td>
+                      <td className="px-3 py-2"><Badge tone={statusTone(slotStatus(flow, "A"))}>{slotStatus(flow, "A")}</Badge></td>
+                      <td className="px-3 py-2">
+                        {canReconcile ? (
+                          <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 font-medium text-white">Reconcile</button>
+                        ) : (
+                          <button onClick={() => navigate(`/annotate/${row.sessionId}?role=A`)} className="text-brand hover:underline">{flow?.aResult ? "View" : "Annotate"}</button>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+
                   {/* Second-reviewer row (double annotation) */}
                   {expanded && isB2B && (
                     <tr key={`${row.caseId}-B`} className="border-b border-line bg-gray-100 align-top text-xs">
                       <td className="px-2 py-2"></td>
                       <td className="px-3 py-2">
                         <span className="font-medium text-ink">{shortNameOf(flow?.bAssignee)}</span>
-                        <Badge tone="neutral" className="ml-1">复评</Badge>
+                        <Badge tone="neutral" className="ml-1">复评 B</Badge>
                       </td>
                       <td className="px-3 py-2">{subtypeCell(row)}</td>
                       <td className="px-3 py-2"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
@@ -496,7 +489,7 @@ export default function TaskDetail() {
                       <td className="px-2 py-2"></td>
                       <td className="px-3 py-2">
                         <span className="font-medium text-ink">{shortNameOf(flow?.cReviewer)}</span>
-                        <Badge tone="brand" className="ml-1">复核</Badge>
+                        <Badge tone="brand" className="ml-1">复核 C</Badge>
                       </td>
                       <td className="px-3 py-2">{subtypeCell(row)}</td>
                       <td className="px-3 py-2"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
