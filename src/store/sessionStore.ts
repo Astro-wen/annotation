@@ -11,7 +11,7 @@ import { cases as defaultCases } from "@/mock/sessions";
 import { buildDemoSeed } from "@/mock/demoSeed";
 import { samePerson } from "@/lib/access";
 
-const STORAGE_KEY = "bytehi-cycle-state-v11";
+const STORAGE_KEY = "bytehi-cycle-state-v12";
 
 // ---- Flow (per-Case runtime state) -----------------------------------------
 
@@ -70,6 +70,7 @@ interface PersistShape {
   logs: ActivityEntry[];
   imported: boolean;
   importSource: string | null;
+  taskNameOverrides: Record<string, string>;
 }
 
 function now(): string {
@@ -92,13 +93,14 @@ function loadInitial(): PersistShape {
           logs: parsed.logs ?? [],
           imported: parsed.imported ?? false,
           importSource: parsed.importSource ?? "session restore",
+          taskNameOverrides: parsed.taskNameOverrides ?? {},
         };
       }
     }
   } catch {
     // ignore corrupt storage
   }
-  return { cases: clone(defaultCases), flows: [], logs: [], imported: false, importSource: null };
+  return { cases: clone(defaultCases), flows: [], logs: [], imported: false, importSource: null, taskNameOverrides: {} };
 }
 
 // ---- Config types ----------------------------------------------------------
@@ -175,10 +177,12 @@ interface SessionStore {
   logs: ActivityEntry[];
   imported: boolean;
   importSource: string | null;
+  taskNameOverrides: Record<string, string>;
 
   loadCases: (rows: CaseRow[], source: string) => void;
   loadDemo: () => void;
   reset: () => void;
+  renameTask: (taskId: string, taskName: string) => void;
 
   getCase: (caseId: string) => CaseRow | undefined;
   getCaseBySession: (sessionId: string) => CaseRow | undefined;
@@ -186,7 +190,7 @@ interface SessionStore {
   getLogs: (caseId: string) => ActivityEntry[];
 
   distributeCases: (taskId: string, config: DistributeConfig, operator: string) => number;
-  assignSingleCase: (caseId: string, slot: "A" | "B", qaName: string, operator: string) => void;
+  assignSingleCase: (caseId: string, slot: "A" | "B" | "C", qaName: string, operator: string) => void;
   submitAnnotation: (caseId: string, role: ReviewRole, scores: PerResultScores, ruleVersion: number, operator: string) => void;
   reconcileDiff: (caseId: string, agreed: PerResultScores, ruleVersion: number, operator: string) => void;
   startSampling: (taskId: string, config: SamplingConfig, operator: string) => number;
@@ -210,6 +214,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             logs: next.logs,
             imported: next.imported,
             importSource: next.importSource,
+            taskNameOverrides: next.taskNameOverrides,
           } satisfies PersistShape),
         );
       } catch {
@@ -266,15 +271,27 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     at: now(),
   });
 
+  const taskRoleLocks = (taskId: string) => {
+    const ab = new Set<string>();
+    const c = new Set<string>();
+    get().flows.forEach((f) => {
+      if (f.taskId !== taskId) return;
+      [f.aResult?.by ?? f.aAssignee, f.bResult?.by ?? f.bAssignee].forEach((p) => p && ab.add(p));
+      if (f.cReviewer) c.add(f.cReviewer);
+    });
+    return { ab, c };
+  };
+
   return {
     cases: initial.cases,
     flows: initial.flows,
     logs: initial.logs,
     imported: initial.imported,
     importSource: initial.importSource,
+    taskNameOverrides: initial.taskNameOverrides,
 
     loadCases: (rows, source) =>
-      persist({ cases: rows, flows: [], logs: [], imported: true, importSource: source }),
+      persist({ cases: rows, flows: [], logs: [], imported: true, importSource: source, taskNameOverrides: {} }),
 
     loadDemo: () => {
       const seed = buildDemoSeed();
@@ -290,12 +307,24 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         logs: [...seed.logs, ...keptLogs],
         imported: true,
         importSource: "Demo Sample",
+        taskNameOverrides: get().taskNameOverrides,
       });
     },
 
     reset: () => {
       sessionStorage.removeItem(STORAGE_KEY);
-      set({ cases: clone(defaultCases), flows: [], logs: [], imported: false, importSource: null });
+      set({ cases: clone(defaultCases), flows: [], logs: [], imported: false, importSource: null, taskNameOverrides: {} });
+    },
+
+    renameTask: (taskId, taskName) => {
+      const name = taskName.trim();
+      if (!name) return;
+      persist({
+        taskNameOverrides: {
+          ...get().taskNameOverrides,
+          [taskId]: name,
+        },
+      });
     },
 
     getCase: (caseId) => get().cases.find((c) => c.caseId === caseId),
@@ -315,6 +344,23 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         }
       }
 
+      const locks = taskRoleLocks(taskId);
+      if (backToBack) {
+        const pairs = config.pairDistribution ?? [];
+        if (pairs.some((p) => p.quantity > 0 && samePerson(p.aName, p.bName))) {
+          throw new Error("同一行的 A、B 不能是同一个人（防自审）。");
+        }
+        if (pairs.some((p) => p.quantity > 0 && (!p.aName?.trim() || !p.bName?.trim()))) {
+          throw new Error("Back-to-Back 每一行都必须同时填写 A 和 B。");
+        }
+        const conflict = pairs.find((p) => p.quantity > 0 && (locks.c.has(p.aName) || locks.c.has(p.bName)));
+        if (conflict) throw new Error("当前 Task 已担任 QC 的人员，不能再通过 Batch Assign 被分配为标注或复评。");
+      } else {
+        const rows = config.aDistribution ?? [];
+        const conflict = rows.find((d) => d.quantity > 0 && locks.c.has(d.name));
+        if (conflict) throw new Error("当前 Task 已担任 QC 的人员，不能再通过 Batch Assign 被分配为标注。");
+      }
+
       // Candidate cases: unassigned, non-Invalid, within selected Types.
       const typeSet = new Set(config.types);
       const candidates = get()
@@ -332,12 +378,6 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       const bByIdx: (string | undefined)[] = [];
       if (backToBack) {
         const pairs = config.pairDistribution ?? [];
-        if (pairs.some((p) => p.quantity > 0 && samePerson(p.aName, p.bName))) {
-          throw new Error("同一行的 A、B 不能是同一个人（防自审）。");
-        }
-        if (pairs.some((p) => p.quantity > 0 && (!p.aName?.trim() || !p.bName?.trim()))) {
-          throw new Error("Back-to-Back 每一行都必须同时填写 A 和 B。");
-        }
         pairs.forEach((p) => {
           for (let i = 0; i < p.quantity; i++) {
             aByIdx.push(p.aName);
@@ -401,20 +441,26 @@ export const useSessionStore = create<SessionStore>((set, get) => {
 
     assignSingleCase: (caseId, slot, qaName, operator) => {
       const flow = get().getFlow(caseId);
+      const row = get().getCase(caseId);
+      const locks = taskRoleLocks(row?.taskId ?? flow?.taskId ?? "");
       // 改派仅在 Finalized Baseline 形成前允许；Sampling 不冻结 A/B。
       if (flow?.finalizedBaseline) throw new Error("该 case 已定稿（Finalized Baseline 已形成），不能再改派。");
+      if (slot !== "C" && locks.c.has(qaName)) throw new Error("当前 Task 已担任 QC 的人员，不能再被分配为标注或复评。");
+      if (slot === "C" && locks.ab.has(qaName)) throw new Error("当前 Task 已担任标注/复评的人员，不能再担任该 Task 的 QC。");
       if (slot === "B") {
         if (flow?.mode !== "Back-to-Back") throw new Error("该 case 不是 Back-to-Back，没有 B 可指派。");
         const aPerson = flow.aResult?.by ?? flow.aAssignee;
         if (samePerson(qaName, aPerson)) throw new Error("B 不能是 A 那个人（防自审）。");
-      } else {
+      } else if (slot === "A") {
         const bPerson = flow?.bResult?.by ?? flow?.bAssignee;
         if (flow?.mode === "Back-to-Back" && samePerson(qaName, bPerson)) {
           throw new Error("A 不能是 B 那个人（防自审）。");
         }
       }
       persist({
-        flows: patchFlow(caseId, slot === "A" ? { aAssignee: qaName } : { bAssignee: qaName }),
+        flows: patchFlow(caseId, {
+          [slot === "A" ? "aAssignee" : slot === "B" ? "bAssignee" : "cReviewer"]: qaName,
+        }),
         logs: [
           ...get().logs,
           log({ caseId, operator, action: `Assign ${slot} to ${qaName}`, detail: `${slot} = ${qaName}` }),
@@ -524,6 +570,10 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     },
 
     startSampling: (taskId, config, operator) => {
+      const locks = taskRoleLocks(taskId);
+      if (config.cReviewer && locks.ab.has(config.cReviewer)) {
+        throw new Error("当前 Task 已担任标注/复评的人员，不能再担任该 Task 的 QC。");
+      }
       // Scope cases (non-Invalid, in this task; by_qa restricts to that person's A/B cases).
       const scopeCases = get().cases.filter((c) => {
         if (c.taskId !== taskId || c.invalid) return false;
@@ -536,27 +586,13 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         return true;
       });
 
-      // Assignment-ready: Normal needs A assigned; Back-to-Back needs A & B assigned.
-      // (QC starts after assignment; A/B annotation and C QC run in parallel — no
-      // Finalized Baseline requirement.)
-      const assignmentReady = (f?: CaseFlow): boolean => {
-        if (!f?.aAssignee) return false;
-        if (f.mode === "Back-to-Back") return !!f.bAssignee;
-        return true;
-      };
-
-      // Eligible = assignment-ready, not yet sampled, and C passes anti-self-review
-      // (always enforced — no one can bypass).
+      // Eligible = all non-Invalid, not-yet-sampled cases in scope. Current PRD no
+      // longer requires A/B assignment/submission/reconcile before Sampling.
       const cEmail = config.cReviewer;
       const eligible = scopeCases.filter((c) => {
         const f = get().getFlow(c.caseId);
-        if (!assignmentReady(f) || f?.sampledForQC) return false;
-        if (cEmail) {
-          const aP = f?.aResult?.by ?? f?.aAssignee;
-          const bP = f?.bResult?.by ?? f?.bAssignee;
-          if (samePerson(cEmail, aP) || samePerson(cEmail, bP)) return false;
-        }
-        return true;
+        if (f?.sampledForQC) return false;
+        return !cEmail || !locks.ab.has(cEmail);
       });
 
       const effectiveCount = scopeCases.length;
@@ -578,20 +614,33 @@ export const useSessionStore = create<SessionStore>((set, get) => {
 
       let flows = get().flows;
       selected.forEach((c) => {
-        const f = get().getFlow(c.caseId);
-        flows = flows.map((x) =>
-          x.caseId === c.caseId
-            ? {
-                ...x,
-                sampledForQC: true,
-                cReviewer: config.cReviewer || x.cReviewer,
-                // Baseline may not exist yet (A/B & C run in parallel); freeze it
-                // if present so Accuracy can compare once both sides exist.
-                sampledBaseline: f?.finalizedBaseline,
-                finalSource: f?.finalizedBaseline ? "baseline" : x.finalSource,
-              }
-            : x,
-        );
+        const f = flows.find((x) => x.caseId === c.caseId);
+        if (f) {
+          flows = flows.map((x) =>
+            x.caseId === c.caseId
+              ? {
+                  ...x,
+                  sampledForQC: true,
+                  cReviewer: config.cReviewer || x.cReviewer,
+                  // Baseline may not exist yet (A/B & C run in parallel); freeze it
+                  // if present so Accuracy can compare once both sides exist.
+                  sampledBaseline: f.finalizedBaseline,
+                  finalSource: f.finalizedBaseline ? "baseline" : x.finalSource,
+                }
+              : x,
+          );
+        } else {
+          flows = [
+            ...flows,
+            {
+              caseId: c.caseId,
+              taskId: c.taskId,
+              mode: "Normal", // Default mode, can be updated by distributeCases later
+              sampledForQC: true,
+              cReviewer: config.cReviewer,
+            },
+          ];
+        }
       });
 
       persist({
@@ -613,7 +662,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     },
 
     batchEdit: (caseIds, reasonByDim, operator) => {
-      const dims = Object.entries(reasonByDim).filter(([, v]) => v);
+      const dims = Object.entries(reasonByDim).filter(([, v]) => v) as [string, string][];
       if (dims.length === 0 || caseIds.length === 0) return;
       const idSet = new Set(caseIds);
       const editedIds: string[] = [];
@@ -621,8 +670,8 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         if (!idSet.has(f.caseId)) return f;
         const target = f.currentResult ?? f.finalizedBaseline;
         if (!target) return f;
-        const results = clone(target.results);
-        for (const r of Object.values(results)) {
+        const results: Record<string, ResultScore> = clone(target.results);
+        for (const r of Object.values(results) as ResultScore[]) {
           r.reasons = r.reasons ?? {};
           for (const [dim, text] of dims) if (r.scores[dim] !== undefined) r.reasons[dim] = text;
         }

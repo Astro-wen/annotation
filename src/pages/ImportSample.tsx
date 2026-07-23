@@ -98,8 +98,8 @@ export default function ImportSample() {
               <thead>
                 <tr className="border-b border-line bg-page text-left text-xs uppercase tracking-wide text-subtle">
                   <th className="px-4 py-3 font-medium">Case ID</th>
-                  <th className="px-4 py-3 font-medium">Session ID</th>
-                  <th className="px-4 py-3 font-medium">Ticket ID</th>
+                  <th className="px-4 py-3 font-medium">Session</th>
+                  <th className="px-4 py-3 font-medium">Ticket</th>
                   <th className="px-4 py-3 font-medium">Knowledge Source</th>
                   <th className="px-4 py-3 font-medium">Recognized Results</th>
                 </tr>

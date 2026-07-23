@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Eye, Users, ShieldCheck, UploadCloud, Settings as SettingsIcon, Trash2, Sparkles } from "lucide-react";
+import { Eye, Users, ShieldCheck, UploadCloud, Settings as SettingsIcon, Trash2, Sparkles, Pencil } from "lucide-react";
 import Layout from "@/components/Layout";
 import { Button } from "@/components/ui";
 import Badge from "@/components/Badge";
@@ -16,7 +16,7 @@ import {
   type DistributeConfig,
   type SamplingConfig,
 } from "@/store/sessionStore";
-import { useCurrentUserStore, shortNameOf } from "@/lib/currentUser";
+import { USER_OPTIONS, useCurrentUserStore, shortNameOf } from "@/lib/currentUser";
 import { samePerson } from "@/lib/access";
 import { computeTaskStats, fmt, RESULT_GROUPS } from "@/lib/aggregate";
 import { formatAccuracy } from "@/lib/scoring";
@@ -37,10 +37,13 @@ export default function Home() {
   const startSampling = useSessionStore((s) => s.startSampling);
   const loadDemo = useSessionStore((s) => s.loadDemo);
   const reset = useSessionStore((s) => s.reset);
+  const renameTask = useSessionStore((s) => s.renameTask);
+  const taskNameOverrides = useSessionStore((s) => s.taskNameOverrides);
   const currentEmail = useCurrentUserStore((s) => s.currentEmail);
   const configVersion = useRubricStore((s) => s.version);
 
   const flowOf = (caseId: string): CaseFlow | undefined => flows.find((f) => f.caseId === caseId);
+  const taskNameOf = (taskId: string, fallback: string) => taskNameOverrides[taskId] ?? fallback;
   const rowsOfTask = (taskId: string) =>
     cases.filter((c) => c.taskId === taskId).map((row) => ({ row, flow: flowOf(row.caseId) }));
 
@@ -71,15 +74,25 @@ export default function Home() {
     return f?.mode;
   };
 
+  const taskRoleLocks = (taskId: string) => {
+    const ab = new Set<string>();
+    const c = new Set<string>();
+    rowsOfTask(taskId).forEach(({ flow }) => {
+      if (!flow) return;
+      [flow.aResult?.by ?? flow.aAssignee, flow.bResult?.by ?? flow.bAssignee].forEach((p) => p && ab.add(p));
+      if (flow.cReviewer) c.add(flow.cReviewer);
+    });
+    return { ab, c };
+  };
+
   // Per-Type availability for the Batch Assign modal.
   const typeAvailability = (taskId: string): TypeAvailability[] => {
     const rows = cases.filter((c) => c.taskId === taskId && !c.invalid);
-    const byType = new Map<CaseType, { total: number; remaining: number; combo: string }>();
+    const byType = new Map<CaseType, { total: number; remaining: number }>();
     for (const c of rows) {
       const cur = byType.get(c.caseType) ?? {
         total: 0,
         remaining: 0,
-        combo: Array.from(new Set(c.expectedResults.map((r) => r.resultType))).join(" + "),
       };
       cur.total += 1;
       if (!flowOf(c.caseId)?.aAssignee) cur.remaining += 1;
@@ -87,7 +100,7 @@ export default function Home() {
     }
     return Array.from(byType.entries())
       .sort((a, b) => a[0] - b[0])
-      .map(([caseType, v]) => ({ caseType, total: v.total, remaining: v.remaining, resultCombo: v.combo }));
+      .map(([, v]) => ({ total: v.total, remaining: v.remaining }));
   };
 
   // ---- Sampling helper closures (scope-aware) ----
@@ -101,6 +114,12 @@ export default function Home() {
       }
       return true;
     });
+
+  const renameTaskByPrompt = (taskId: string, currentName: string) => {
+    const next = window.prompt("编辑 Task 名称", currentName);
+    if (!next || next.trim() === currentName.trim()) return;
+    renameTask(taskId, next);
+  };
 
   return (
     <Layout>
@@ -175,7 +194,7 @@ export default function Home() {
                     <th className="px-3 py-3 font-medium">Back-to-Back Complete Rate</th>
                     <th className="px-3 py-3 font-medium">QC Complete</th>
                     <th className="px-3 py-3 font-medium">负责人（标注 · QC）</th>
-                    <th className="px-3 py-3 font-medium">SQS / UEF / UXS · QC Acc（按结果组）</th>
+                    <th className="px-3 py-3 font-medium">SQS / User Satisfaction / User Experience Score · QC Accuracy</th>
                     <th className="px-3 py-3 font-medium">Actions</th>
                   </tr>
                 </thead>
@@ -191,7 +210,16 @@ export default function Home() {
                           <Badge tone="neutral">{t.source}</Badge>
                         </td>
                         <td className="px-3 py-3">
-                          <div className="font-medium text-ink">{t.taskName}</div>
+                          <div className="flex items-center gap-1">
+                            <div className="font-medium text-ink">{taskNameOf(t.taskId, t.taskName)}</div>
+                            <button
+                              onClick={() => renameTaskByPrompt(t.taskId, taskNameOf(t.taskId, t.taskName))}
+                              className="text-subtle hover:text-ink"
+                              title="Edit task name"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                           <div className="text-xs text-muted">{t.ruleVersion}</div>
                         </td>
                         <td className="px-3 py-3">
@@ -264,9 +292,9 @@ export default function Home() {
                               <tr className="text-[9px] uppercase text-muted">
                                 <th className="pr-2 text-left font-medium"></th>
                                 <th className="px-1 font-medium">SQS</th>
-                                <th className="px-1 font-medium">UEF</th>
-                                <th className="px-1 font-medium">UXS</th>
-                                <th className="px-1 font-medium">QC Acc</th>
+                                <th className="px-1 font-medium">User Satisfaction</th>
+                                <th className="px-1 font-medium">User Experience Score</th>
+                                <th className="px-1 font-medium">QC Accuracy</th>
                               </tr>
                             </thead>
                             <tbody className="font-mono">
@@ -311,8 +339,9 @@ export default function Home() {
 
       {assignTask && (
         <AssignModal
-          taskName={assignTask.taskName}
+          taskName={taskNameOf(assignTask.taskId, assignTask.taskName)}
           types={typeAvailability(assignTask.taskId)}
+          taskQCOwners={Array.from(taskRoleLocks(assignTask.taskId).c)}
           lockedMode={taskModeOf(assignTask.taskId)}
           onClose={() => setAssignTask(null)}
           onConfirm={(config: DistributeConfig) => {
@@ -330,48 +359,28 @@ export default function Home() {
 
       {samplingTaskId && (() => {
         const meta = caseSets.find((t) => t.taskId === samplingTaskId)!;
-        // Assignment-ready: Normal needs A; Back-to-Back needs A & B (QC starts after assignment).
-        const ready = (f?: CaseFlow) => !!f?.aAssignee && (f.mode !== "Back-to-Back" || !!f.bAssignee);
+        const locks = taskRoleLocks(samplingTaskId);
+        const qaOptions = USER_OPTIONS.map((u) => ({ email: u.email, label: u.label }));
         const effectiveOf = (scope: "all_qas" | "by_qa", qa?: string) => scopeRows(samplingTaskId, scope, qa).length;
         const alreadySampledOf = (scope: "all_qas" | "by_qa", qa?: string) =>
           scopeRows(samplingTaskId, scope, qa).filter(({ flow }) => flow?.sampledForQC).length;
-        const excludedOf = (scope: "all_qas" | "by_qa", qa: string | undefined, c: string | undefined) => {
-          if (!c) return 0;
-          return scopeRows(samplingTaskId, scope, qa).filter(({ flow }) => {
-            if (!ready(flow) || flow?.sampledForQC) return false;
-            const aP = flow?.aResult?.by ?? flow?.aAssignee;
-            const bP = flow?.bResult?.by ?? flow?.bAssignee;
-            return samePerson(c, aP) || samePerson(c, bP);
-          }).length;
-        };
         const availableOf = (scope: "all_qas" | "by_qa", qa: string | undefined, c: string | undefined) =>
           scopeRows(samplingTaskId, scope, qa).filter(({ flow }) => {
-            if (!ready(flow) || flow?.sampledForQC) return false;
-            if (c) {
-              const aP = flow?.aResult?.by ?? flow?.aAssignee;
-              const bP = flow?.bResult?.by ?? flow?.bAssignee;
-              if (samePerson(c, aP) || samePerson(c, bP)) return false;
-            }
-            return true;
+            if (flow?.sampledForQC) return false;
+            return !c || !locks.ab.has(c);
           }).length;
-        // Task-level anti-self-review: the chosen C cannot be any A/B in this task.
-        const cIsTaskAB = (c: string | undefined) => {
-          if (!c) return false;
-          return rowsOfTask(samplingTaskId).some(({ flow }) => {
-            const aP = flow?.aResult?.by ?? flow?.aAssignee;
-            const bP = flow?.bResult?.by ?? flow?.bAssignee;
-            return samePerson(c, aP) || samePerson(c, bP);
-          });
-        };
+        const cReviewerOptions = USER_OPTIONS
+          .filter((u) => !locks.ab.has(u.email))
+          .map((u) => ({ email: u.email, label: u.label }));
         return (
           <SamplingModal
-            taskName={meta.taskName}
+            taskName={taskNameOf(meta.taskId, meta.taskName)}
             currentEmail={currentEmail}
-            cIsTaskAB={cIsTaskAB}
             effectiveOf={effectiveOf}
             alreadySampledOf={alreadySampledOf}
             availableOf={availableOf}
-            excludedOf={excludedOf}
+            qaOptions={qaOptions}
+            cReviewerOptions={cReviewerOptions}
             onClose={() => setSamplingTaskId(null)}
             onConfirm={(config: SamplingConfig) => {
               try {

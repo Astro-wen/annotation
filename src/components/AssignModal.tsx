@@ -2,16 +2,12 @@ import { useState } from "react";
 import { Users, X, Plus, AlertCircle } from "lucide-react";
 import { USER_OPTIONS } from "@/lib/currentUser";
 import { samePerson } from "@/lib/access";
-import type { CaseType } from "@/mock/types";
 import type { DistributeConfig, QaAllocation, QaPair } from "@/store/sessionStore";
-import { ANNOTATION_CATEGORY_BY_TYPE } from "@/mock/sessions";
 
 /** Per-Type availability within the current case set (unassigned, non-invalid). */
 export interface TypeAvailability {
-  caseType: CaseType;
   total: number; // valid cases of this type
   remaining: number; // unassigned & non-invalid of this type
-  resultCombo: string; // e.g. "Chatbot + Ticketbot"
 }
 
 // ---- QA name search input ---------------------------------------------------
@@ -19,10 +15,12 @@ export interface TypeAvailability {
 function QaNameInput({
   value,
   onChange,
+  disallowed,
   placeholder = "Enter QA name / email",
 }: {
   value: string;
   onChange: (v: string) => void;
+  disallowed?: Set<string>;
   placeholder?: string;
 }) {
   const [focus, setFocus] = useState(false);
@@ -35,6 +33,7 @@ function QaNameInput({
           u.shortName.toLowerCase().includes(q),
       )
     : USER_OPTIONS;
+  const available = matches.filter((u) => !disallowed?.has(u.email));
   return (
     <div className="relative">
       <input
@@ -45,9 +44,9 @@ function QaNameInput({
         placeholder={placeholder}
         className="h-10 w-full rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
       />
-      {focus && matches.length > 0 && (
+      {focus && available.length > 0 && (
         <div className="absolute z-30 mt-1 max-h-52 w-full overflow-y-auto rounded-lg border border-line bg-white shadow-lg">
-          {matches.map((u) => (
+          {available.map((u) => (
             <button
               key={u.email}
               type="button"
@@ -66,44 +65,35 @@ function QaNameInput({
 export default function AssignModal({
   taskName,
   types,
+  taskQCOwners,
   lockedMode,
   onClose,
   onConfirm,
 }: {
   taskName: string;
-  /** per-Type availability list (only Types present in the set) */
   types: TypeAvailability[];
+  /** Task-level lock: current QC owners cannot be assigned to A/B. */
+  taskQCOwners: string[];
   /** locked task mode; undefined = first assignment (选择并锁定) */
   lockedMode?: "Normal" | "Back-to-Back";
   onClose: () => void;
   onConfirm: (config: DistributeConfig) => void;
 }) {
   const [mode, setMode] = useState<"Normal" | "Back-to-Back">(lockedMode ?? "Normal");
-  const [selectedTypes, setSelectedTypes] = useState<Set<CaseType>>(new Set());
   const [normalRows, setNormalRows] = useState<QaAllocation[]>([{ name: "", quantity: 0 }]);
   const [pairRows, setPairRows] = useState<QaPair[]>([{ aName: "", bName: "", quantity: 0 }]);
   const [confirmLock, setConfirmLock] = useState(false);
+  const blocked = new Set(taskQCOwners);
 
-  // Effective Types for this round: selected, or All when none selected.
-  const effectiveTypes = selectedTypes.size > 0 ? types.filter((t) => selectedTypes.has(t.caseType)) : types;
-  const totalRemaining = effectiveTypes.reduce((sum, t) => sum + t.remaining, 0);
+  const totalRemaining = types.reduce((sum, t) => sum + t.remaining, 0);
 
   const requested = mode === "Normal"
     ? normalRows.reduce((s, r) => s + (r.quantity || 0), 0)
     : pairRows.reduce((s, r) => s + (r.quantity || 0), 0);
 
-  const toggleType = (t: CaseType) => {
-    setSelectedTypes((prev) => {
-      const next = new Set(prev);
-      if (next.has(t)) next.delete(t);
-      else next.add(t);
-      return next;
-    });
-  };
-
   const buildConfig = (): DistributeConfig => ({
     mode,
-    types: Array.from(selectedTypes),
+    types: [],
     aDistribution: mode === "Normal" ? normalRows.filter((r) => r.name.trim() && r.quantity > 0) : undefined,
     pairDistribution: mode === "Back-to-Back" ? pairRows.filter((r) => r.quantity > 0) : undefined,
   });
@@ -114,12 +104,16 @@ export default function AssignModal({
       return `本轮所选范围只剩 ${totalRemaining} 条可分配，当前填写了 ${requested} 条，请减少数量。`;
     if (mode === "Normal" && normalRows.filter((r) => r.name.trim() && r.quantity > 0).length === 0)
       return "请至少填写一行 QA 与数量。";
+    if (mode === "Normal" && normalRows.some((r) => r.quantity > 0 && blocked.has(r.name)))
+      return "当前 Task 已担任 QC 的人员，不能再分配为标注。";
     if (mode === "Back-to-Back") {
       const rows = pairRows.filter((r) => r.quantity > 0);
       if (rows.some((r) => !r.aName.trim() || !r.bName.trim())) return "Back-to-Back 每一行都必须同时填写 标注 和 复评。";
       // 防自审：同一行的两名标注员不能是同一人（任何人都不能绕过）。
       if (rows.some((r) => samePerson(r.aName, r.bName)))
         return "防自审：同一行的 标注 与 复评 不能是同一个人。";
+      if (rows.some((r) => blocked.has(r.aName) || blocked.has(r.bName)))
+        return "当前 Task 已担任 QC 的人员，不能再分配为标注或复评。";
     }
     return null;
   };
@@ -182,45 +176,8 @@ export default function AssignModal({
             </div>
           </div>
 
-          {/* Type selection */}
-          <div className="rounded-lg border border-line p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-sm font-semibold text-ink">Case Type（不勾选 = All）</span>
-              <span className="text-xs text-subtle">
-                Total remaining: <span className="font-mono font-semibold text-ink">{totalRemaining}</span>
-              </span>
-            </div>
-            <div className="space-y-1.5">
-              {types.map((t) => {
-                const checked = selectedTypes.has(t.caseType);
-                const disabled = t.remaining === 0;
-                return (
-                  <label
-                    key={t.caseType}
-                    className={`flex items-center justify-between rounded-md border px-3 py-2 text-sm ${
-                      disabled ? "border-line bg-page opacity-60" : checked ? "border-brand bg-brand-light" : "border-line"
-                    }`}
-                  >
-                    <span className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        disabled={disabled}
-                        checked={checked}
-                        onChange={() => toggleType(t.caseType)}
-                      />
-                      <span className="font-medium text-ink">Type {t.caseType}</span>
-                      <span className="text-xs text-subtle">
-                        {ANNOTATION_CATEGORY_BY_TYPE[t.caseType]} · {t.resultCombo}
-                      </span>
-                    </span>
-                    <span className="font-mono text-xs text-subtle">
-                      total {t.total} · remaining {t.remaining}
-                    </span>
-                  </label>
-                );
-              })}
-              {types.length === 0 && <p className="text-sm text-subtle">该 case set 暂无可分配 Type。</p>}
-            </div>
+          <div className="rounded-lg border border-line bg-page px-4 py-3 text-sm text-subtle">
+            当前 Task 可分配剩余 <span className="font-mono font-semibold text-ink">{totalRemaining}</span> 条 case
           </div>
 
           {/* Distribution */}
@@ -239,7 +196,11 @@ export default function AssignModal({
               {normalRows.map((row, i) => (
                 <div key={i} className="mb-2 flex items-start gap-3">
                   <div className="flex-1">
-                    <QaNameInput value={row.name} onChange={(v) => setNormalRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, name: v } : r)))} />
+                    <QaNameInput
+                      value={row.name}
+                      disallowed={blocked}
+                      onChange={(v) => setNormalRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, name: v } : r)))}
+                    />
                   </div>
                   <input
                     type="number"
@@ -277,10 +238,20 @@ export default function AssignModal({
               {pairRows.map((row, i) => (
                 <div key={i} className="mb-2 flex items-start gap-3">
                   <div className="flex-1">
-                    <QaNameInput value={row.aName} placeholder="标注 姓名" onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, aName: v } : r)))} />
+                    <QaNameInput
+                      value={row.aName}
+                      disallowed={blocked}
+                      placeholder="标注 姓名"
+                      onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, aName: v } : r)))}
+                    />
                   </div>
                   <div className="flex-1">
-                    <QaNameInput value={row.bName} placeholder="复评 姓名" onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, bName: v } : r)))} />
+                    <QaNameInput
+                      value={row.bName}
+                      disallowed={blocked}
+                      placeholder="复评 姓名"
+                      onChange={(v) => setPairRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, bName: v } : r)))}
+                    />
                   </div>
                   <input
                     type="number"

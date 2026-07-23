@@ -9,6 +9,7 @@ import {
   RotateCcw,
   X,
   Download,
+  Pencil,
 } from "lucide-react";
 import Layout from "@/components/Layout";
 import { Button } from "@/components/ui";
@@ -42,6 +43,12 @@ const PROCESS_STATUSES = [
   "Invalid",
 ] as const;
 
+function displayProcessStatus(status: string): string {
+  if (status === "Waiting for QC") return "待 QC";
+  if (status === "QC Completed") return "QC 完成";
+  return status;
+}
+
 export default function TaskDetail() {
   const { taskId = "" } = useParams();
   const navigate = useNavigate();
@@ -56,10 +63,13 @@ export default function TaskDetail() {
   const restoreInvalid = useSessionStore((s) => s.restoreInvalid);
   const batchEdit = useSessionStore((s) => s.batchEdit);
   const getLogs = useSessionStore((s) => s.getLogs);
+  const renameTask = useSessionStore((s) => s.renameTask);
+  const taskNameOverrides = useSessionStore((s) => s.taskNameOverrides);
   const activeRubricForVersion = useRubricStore((s) => s.activeRubricForVersion);
   const skipReasonsForVersion = useRubricStore((s) => s.skipReasonsForVersion);
 
   const meta = caseSets.find((c) => c.taskId === taskId);
+  const displayTaskName = meta ? taskNameOverrides[taskId] ?? meta.taskName : taskId;
   const flowOf = (caseId: string) => flows.find((f) => f.caseId === caseId);
 
   // ---- filters / toolbar state ----
@@ -71,7 +81,7 @@ export default function TaskDetail() {
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchOpen, setBatchOpen] = useState(false);
-  const [assignModal, setAssignModal] = useState<{ caseId: string; slot: "A" | "B" } | null>(null);
+  const [assignModal, setAssignModal] = useState<{ caseId: string; slot: "A" | "B" | "C" } | null>(null);
   const [reconcileCaseId, setReconcileCaseId] = useState<string | null>(null);
   const [logCaseId, setLogCaseId] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<{ version: number; snap: ScoreSnapshot } | null>(null);
@@ -95,7 +105,7 @@ export default function TaskDetail() {
     }
     if (fStatus !== "All") {
       const st = caseStatus(c, f);
-      if (fStatus === "待拉齐（Diff）" ? st !== "待拉齐（Diff）" : st !== fStatus) return false;
+      if (fStatus === "待拉齐（Diff）" ? st !== "待拉齐（Diff）" : displayProcessStatus(st) !== displayProcessStatus(fStatus)) return false;
     }
     return true;
   };
@@ -113,7 +123,10 @@ export default function TaskDetail() {
   // Expandable = any case that has a flow (matches the row-level `expandable`),
   // and is currently visible under the active filters.
   const expandableIds = visibleCases
-    .filter((c) => !!flowOf(c.caseId))
+    .filter((c) => {
+      const f = flowOf(c.caseId);
+      return !!f || c.invalid; // Even without A/B assigned, if it's invalid or has a flow (e.g. sampled for QC), it can be expanded.
+    })
     .map((c) => c.caseId);
   const allExpanded = expandableIds.length > 0 && expandableIds.every((id) => expandedRows.has(id));
   const toggleExpandAll = () => setExpandedRows(allExpanded ? new Set() : new Set(expandableIds));
@@ -246,6 +259,12 @@ export default function TaskDetail() {
     );
   }
 
+  const renameTaskByPrompt = () => {
+    const next = window.prompt("编辑 Task 名称", displayTaskName);
+    if (!next || next.trim() === displayTaskName.trim()) return;
+    renameTask(taskId, next);
+  };
+
   return (
     <Layout>
       <div className="flex items-center justify-between border-b border-line bg-white px-6 py-4">
@@ -253,8 +272,15 @@ export default function TaskDetail() {
           <button onClick={() => navigate("/home")} className="mb-1 flex items-center gap-1 text-xs text-subtle hover:text-ink">
             <ArrowLeft className="h-3.5 w-3.5" /> Back
           </button>
-          <h1 className="text-lg font-semibold text-ink">{meta.taskName}</h1>
-          <p className="text-xs text-subtle">Detail · Session List · {taskId} · SQS (6) + UEF · User Experience Score (North Star) · Config {meta.ruleVersion}</p>
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-semibold text-ink">{displayTaskName}</h1>
+            {!viewer && (
+              <button onClick={renameTaskByPrompt} className="text-subtle hover:text-ink" title="Edit task name">
+                <Pencil className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-subtle">Detail · Case List · {taskId} · SQS + User Satisfaction + User Experience Score · Config {meta.ruleVersion}</p>
         </div>
         <DownloadCsvMenu taskId={taskId} label="Download CSV" />
       </div>
@@ -309,7 +335,7 @@ export default function TaskDetail() {
           {["All", "R1", "R2", "R3"].map((v) => <option key={v} value={v}>{v === "All" ? "Problem Type: All" : v}</option>)}
         </select>
         <select value={fStatus} onChange={(e) => setFStatus(e.target.value as typeof fStatus)} className="h-8 rounded-md border border-line bg-white px-2 text-ink outline-none focus:border-brand">
-          {PROCESS_STATUSES.map((v) => <option key={v} value={v}>{v === "All" ? "流程状态: All" : v}</option>)}
+          {PROCESS_STATUSES.map((v) => <option key={v} value={v}>{v === "All" ? "流程状态: All" : displayProcessStatus(v)}</option>)}
         </select>
         <span className="ml-auto text-subtle">{visibleCases.length} cases</span>
       </div>
@@ -319,7 +345,7 @@ export default function TaskDetail() {
           <thead>
             <tr className="border-b border-line bg-page text-left text-xs uppercase tracking-wide text-subtle">
               <th className="w-8 px-2 py-3"></th>
-              <th className="px-3 py-3 font-medium">Session ID</th>
+              <th className="px-3 py-3 font-medium">Session / Ticket ID</th>
               <th className="px-3 py-3 font-medium">Subtype</th>
               <th className="px-3 py-3 font-medium">Source</th>
               {sqsExpanded && sqsDims.map((d) => <th key={d.key} className="px-2 py-3 text-[10px] font-medium">{d.dimension}</th>)}
@@ -328,7 +354,7 @@ export default function TaskDetail() {
                   SQS {sqsExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
                 </button>
               </th>
-              <th className="px-3 py-3 font-medium">UEF</th>
+              <th className="px-3 py-3 font-medium">User Satisfaction</th>
               <th className="px-3 py-3 font-medium">User Experience Score</th>
               <th className="px-3 py-3 font-medium">Transfer to human?</th>
               <th className="px-3 py-3 font-medium">Assign QA</th>
@@ -342,7 +368,7 @@ export default function TaskDetail() {
               const isB2B = flow?.mode === "Back-to-Back";
               // The main row is the Final Result; A/B/C live in the expandable rows.
               // Expandable once the case has been assigned (has a flow).
-              const expandable = !!flow;
+              const expandable = !!flow || row.invalid;
               const expanded = expandedRows.has(row.caseId);
               const status = caseStatus(row, flow);
               const eff = effectiveRound(flow);
@@ -351,23 +377,27 @@ export default function TaskDetail() {
               const canReconcile =
                 !invalid && isDiff &&
                 (samePerson(currentEmail, flow?.aResult?.by) || samePerson(currentEmail, flow?.bResult?.by));
+              const aProcessStatus = isDiff ? "待拉齐（Diff）" : slotStatus(flow, "A");
+              const bProcessStatus = isDiff ? "待拉齐（Diff）" : slotStatus(flow, "B");
+              const showSharedReconcile = isB2B && isDiff;
               return (
                 <>
                   {/* Main row = Final Result (QC > Baseline > —); A/B/C in expand. */}
                   <tr key={row.caseId} className={`border-b border-line align-top ${invalid ? "bg-gray-50 opacity-60" : "hover:bg-page"}`}>
                     <td className="px-2 py-3">
-                      <div className="flex items-center gap-1">
-                        <input type="checkbox" checked={selected.has(row.caseId)} onChange={() => toggleSelect(row.caseId)} disabled={invalid} />
-                        {expandable && (
-                          <button onClick={() => toggleExpand(row.caseId)} className="text-subtle">
-                            {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                          </button>
-                        )}
-                      </div>
-                    </td>
+                        <div className="flex items-center gap-1">
+                          <input type="checkbox" checked={selected.has(row.caseId)} onChange={() => toggleSelect(row.caseId)} disabled={invalid} />
+                          {/* Expand/Collapse toggle */}
+                          {expandable && (
+                            <button onClick={() => toggleExpand(row.caseId)} className="text-subtle hover:text-ink">
+                              {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                            </button>
+                          )}
+                        </div>
+                      </td>
                     <td className="px-3 py-3">
                       <button onClick={() => navigate(`/annotate/${row.sessionId}`)} className="font-mono text-xs text-brand hover:underline">{row.sessionId}</button>
-                      <div className="text-[10px] text-muted">Type {row.caseType} · {row.caseId}</div>
+                      <div className="font-mono text-[10px] text-muted">Ticket {row.ticketId ?? "—"} · {row.caseId}</div>
                     </td>
                     <td className="px-3 py-3">{subtypeCell(row)}</td>
                     <td className="px-3 py-3"><Badge tone={row.knowledgeSource === "SOP" ? "neutral" : "brand"}>{row.knowledgeSource}</Badge></td>
@@ -392,16 +422,12 @@ export default function TaskDetail() {
                       <div className="space-y-0.5 text-[11px]">
                         <div><span className="text-muted">标注</span> {shortNameOf(flow?.aAssignee)}</div>
                         {isB2B && <div><span className="text-muted">复评</span> {shortNameOf(flow?.bAssignee)}</div>}
-                        <div><span className="text-muted">QC</span> {flow?.cReviewer ? <span className="text-brand">{shortNameOf(flow.cReviewer)}</span> : "—"}</div>
+                        <div><span className="text-muted">QC</span> {flow?.cReviewer ? <span className="text-brand">{shortNameOf(flow.cReviewer)}</span> : flow?.sampledForQC ? <span className="text-muted">待分配 QC</span> : "—"}</div>
                       </div>
                     </td>
-                    <td className="px-3 py-3"><Badge tone={statusTone(status)}>{status}</Badge></td>
+                    <td className="px-3 py-3 text-muted">—</td>
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1">
-                        {/* Back-to-Back Diff: a single Reconcile entry at the Final level. */}
-                        {canReconcile && (
-                          <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 text-xs font-medium text-white">Reconcile</button>
-                        )}
                         <button onClick={() => setLogCaseId(row.caseId)} className="text-subtle hover:text-ink" title="Activity Log"><FileText className="h-4 w-4" /></button>
                         {canToggleInvalid(currentEmail, status) && (
                           invalid ? (
@@ -415,7 +441,7 @@ export default function TaskDetail() {
                   </tr>
 
                   {/* A row (expanded) */}
-                  {expanded && (
+                  {expanded && flow?.aAssignee && (
                     <tr key={`${row.caseId}-A`} className="border-b border-line bg-gray-50 align-top text-xs">
                       <td className="px-2 py-2"></td>
                       <td className="px-3 py-2">
@@ -438,19 +464,32 @@ export default function TaskDetail() {
                           {flow?.aAssignee ? shortNameOf(flow.aAssignee) : "分配标注员"}
                         </button>
                       </td>
-                      <td className="px-3 py-2"><Badge tone={statusTone(slotStatus(flow, "A"))}>{slotStatus(flow, "A")}</Badge></td>
-                      <td className="px-3 py-2">
-                        {canReconcile ? (
-                          <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 font-medium text-white">Reconcile</button>
-                        ) : (
-                          <button onClick={() => navigate(`/annotate/${row.sessionId}?role=A`)} className="text-brand hover:underline">{flow?.aResult ? "View" : "Annotate"}</button>
-                        )}
-                      </td>
+                      <td className="px-3 py-2"><Badge tone={statusTone(aProcessStatus)}>{aProcessStatus}</Badge></td>
+                      {showSharedReconcile ? (
+                        <td rowSpan={2} className="px-3 py-2 text-center align-middle">
+                          {canReconcile ? (
+                            <button
+                              onClick={() => setReconcileCaseId(row.caseId)}
+                              className="inline-flex h-8 min-w-[76px] items-center justify-center rounded-md bg-danger px-2.5 text-center text-[11px] font-medium text-white"
+                            >
+                              Reconcile
+                            </button>
+                          ) : (
+                            <div className="inline-flex h-8 min-w-[76px] items-center justify-center rounded-md border border-line bg-white px-2.5 text-center text-[11px] text-muted">
+                              待拉齐
+                            </div>
+                          )}
+                        </td>
+                      ) : (
+                        <td className="px-3 py-2">
+                          <button onClick={() => navigate(`/annotate/${row.sessionId}?role=A`)} className="text-brand hover:underline">{viewer ? "View" : "Annotate"}</button>
+                        </td>
+                      )}
                     </tr>
                   )}
 
                   {/* Second-reviewer row (double annotation) */}
-                  {expanded && isB2B && (
+                  {expanded && isB2B && flow?.bAssignee && (
                     <tr key={`${row.caseId}-B`} className="border-b border-line bg-gray-100 align-top text-xs">
                       <td className="px-2 py-2"></td>
                       <td className="px-3 py-2">
@@ -473,23 +512,21 @@ export default function TaskDetail() {
                           {flow?.bAssignee ? shortNameOf(flow.bAssignee) : "分配复评"}
                         </button>
                       </td>
-                      <td className="px-3 py-2"><Badge tone={statusTone(slotStatus(flow, "B"))}>{slotStatus(flow, "B")}</Badge></td>
-                      <td className="px-3 py-2">
-                        {flow?.reconcileStatus === "Pending" && (samePerson(currentEmail, flow.aResult?.by) || samePerson(currentEmail, flow.bResult?.by)) ? (
-                          <button onClick={() => setReconcileCaseId(row.caseId)} className="rounded-md bg-danger px-2 py-1 font-medium text-white">Reconcile</button>
-                        ) : (
-                          <button onClick={() => navigate(`/annotate/${row.sessionId}?role=B`)} className="text-brand hover:underline">{flow?.bResult ? "View" : "Annotate"}</button>
-                        )}
-                      </td>
+                      <td className="px-3 py-2"><Badge tone={statusTone(bProcessStatus)}>{bProcessStatus}</Badge></td>
+                      {!showSharedReconcile && (
+                        <td className="px-3 py-2">
+                          <button onClick={() => navigate(`/annotate/${row.sessionId}?role=B`)} className="text-brand hover:underline">{viewer ? "View" : "Annotate"}</button>
+                        </td>
+                      )}
                     </tr>
                   )}
 
-                  {/* Review row (抽样复核) */}
+                  {/* QC row (expanded) */}
                   {expanded && flow?.sampledForQC && (
-                    <tr key={`${row.caseId}-C`} className="border-b border-line bg-brand-light/40 align-top text-xs">
+                    <tr key={`${row.caseId}-C`} className="border-b border-line bg-gray-50 align-top text-xs">
                       <td className="px-2 py-2"></td>
                       <td className="px-3 py-2">
-                        <span className="font-medium text-ink">{shortNameOf(flow?.cReviewer)}</span>
+                        <span className="font-medium text-ink">{flow?.cReviewer ? shortNameOf(flow.cReviewer) : "—"}</span>
                         <Badge tone="brand" className="ml-1">QC</Badge>
                       </td>
                       <td className="px-3 py-2">{subtypeCell(row)}</td>
@@ -499,24 +536,30 @@ export default function TaskDetail() {
                       <td className="px-3 py-2">{scoreCells(row, flow?.cResult, "UEF")}</td>
                       <td className="px-3 py-2">{uxsCell(row, flow?.cResult)}</td>
                       <td className="px-3 py-2"></td>
-                      <td className="px-3 py-2"></td>
+                      <td className="px-3 py-2">
+                        <button
+                          disabled={invalid || viewer}
+                          onClick={() => setAssignModal({ caseId: row.caseId, slot: "C" })}
+                          className="text-brand hover:underline disabled:cursor-not-allowed disabled:text-muted disabled:no-underline"
+                        >
+                          {flow?.cReviewer ? shortNameOf(flow.cReviewer) : "分配 QC"}
+                        </button>
+                      </td>
                       <td className="px-3 py-2"><Badge tone={flow?.qcCompleted ? "success" : "warning"}>{flow?.qcCompleted ? "QC 完成" : "待 QC"}</Badge></td>
                       <td className="px-3 py-2">
                         {(() => {
-                          const isMyC = samePerson(currentEmail, flow?.cReviewer);
                           if (flow?.qcCompleted) {
+                            if (viewer) {
+                              return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C&view=1`)} className="text-brand hover:underline">View</button>;
+                            }
                             const reQc = () => {
                               if (window.confirm("将覆盖已完成的 QC 结果，重新复核该 case。确定继续？")) {
                                 navigate(`/annotate/${row.sessionId}?role=C`);
                               }
                             };
-                            return (
-                              <div className="flex items-center gap-2">
-                                <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C&view=1`)} className="text-brand hover:underline">View</button>
-                                {isMyC && !viewer && <button onClick={reQc} className="text-subtle hover:text-ink hover:underline">Edit QC</button>}
-                              </div>
-                            );
+                            return <button onClick={reQc} className="text-brand hover:underline">Edit QC</button>;
                           }
+                          const isMyC = samePerson(currentEmail, flow?.cReviewer);
                           const selfConflict = samePerson(currentEmail, flow?.aResult?.by) || samePerson(currentEmail, flow?.bResult?.by);
                           if (selfConflict) return <span className="text-muted">你已标过当前 session！</span>;
                           if (isMyC) return <button onClick={() => navigate(`/annotate/${row.sessionId}?role=C`)} className="rounded-md bg-brand px-2 py-1 font-medium text-white">Do QC</button>;
@@ -644,7 +687,7 @@ export default function TaskDetail() {
                     <div key={k} className="flex justify-between" title={reason}><span className="text-subtle">{k}</span><span className="font-mono text-[#B45309]">Skip</span></div>
                   ))}
                 </div>
-                <p className="mt-2 font-mono text-xs text-brand">SQS {s.sqsAvg.toFixed(2)} · UEF {s.uefTotal.toFixed(2)} · UXS {s.uxs.toFixed(2)}</p>
+                <p className="mt-2 font-mono text-xs text-brand">SQS {s.sqsAvg.toFixed(2)} · User Satisfaction {s.uefTotal.toFixed(2)} · User Experience Score {s.uxs.toFixed(2)}</p>
               </div>
             ))}
           </div>
@@ -663,7 +706,7 @@ function SingleAssignModal({
   onClose,
   onConfirm,
 }: {
-  slot: "A" | "B";
+  slot: "A" | "B" | "C";
   currentEmail: string;
   conflictPeople: (string | undefined)[];
   onClose: () => void;
@@ -675,7 +718,7 @@ function SingleAssignModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
       <div className="w-full max-w-sm rounded-xl border border-line bg-white p-5 shadow-xl">
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-base font-semibold text-ink">{slot === "A" ? "分配标注员" : "分配复评标注员"}</h3>
+          <h3 className="text-base font-semibold text-ink">{slot === "A" ? "分配标注员" : slot === "B" ? "分配复评标注员" : "分配 QC"}</h3>
           <button onClick={onClose} className="text-subtle hover:text-ink"><X className="h-5 w-5" /></button>
         </div>
         <select value={name} onChange={(e) => setName(e.target.value)} className="h-10 w-full rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white">

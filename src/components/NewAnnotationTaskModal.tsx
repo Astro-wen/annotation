@@ -55,8 +55,7 @@ export default function NewAnnotationTaskModal({
               }}
             />
             <p className="mt-2 text-sm text-subtle">
-              The file will be parsed immediately after selection. The system recognizes each
-              Case Type (1–8) and generates its expected results.
+              The file will be parsed immediately after selection, and each case will generate its expected result set.
             </p>
           </div>
 

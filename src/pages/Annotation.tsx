@@ -2,14 +2,12 @@ import { useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Ban } from "lucide-react";
 import Layout from "@/components/Layout";
-import ChatThread from "@/components/ChatThread";
 import { ScoreRow } from "@/components/ScorePanel";
 import Badge from "@/components/Badge";
-import { getConversation, getTicketThread } from "@/mock/conversation";
 import { executionOptions } from "@/mock/settings";
 import { type ExpectedResult, type ProblemType, type ResultScore, type ReviewRole, resultGroupOf, evidenceKindOf } from "@/mock/types";
 import { useRubricStore } from "@/store/rubricStore";
-import { useSessionStore, type RoundResult } from "@/store/sessionStore";
+import { useSessionStore } from "@/store/sessionStore";
 import { useCurrentUserStore, isViewer, shortNameOf } from "@/lib/currentUser";
 import { samePerson } from "@/lib/access";
 import { computeResultScore } from "@/lib/scoring";
@@ -31,6 +29,7 @@ export default function Annotation() {
   const currentEmail = useCurrentUserStore((s) => s.currentEmail);
   const viewer = isViewer(currentEmail);
   const getCaseBySession = useSessionStore((s) => s.getCaseBySession);
+  const cases = useSessionStore((s) => s.cases);
   const flows = useSessionStore((s) => s.flows);
   const submitAnnotation = useSessionStore((s) => s.submitAnnotation);
 
@@ -63,6 +62,7 @@ export default function Annotation() {
   // Per-result score state: resultId -> { scores, reasons, skips, problemType }.
   // Every dimension starts blank — Responsiveness is a manual, optional field
   // (no auto scoring in Phase 1); C's card is also blank (no A/B prefill).
+  const [currentCaseId, setCurrentCaseId] = useState(caseRow?.caseId);
   const [state, setState] = useState<Record<string, { scores: Record<string, number>; reasons: Record<string, string>; skips: Record<string, string>; problemType?: ProblemType }>>(() => {
     const init: Record<string, { scores: Record<string, number>; reasons: Record<string, string>; skips: Record<string, string>; problemType?: ProblemType }> = {};
     for (const er of caseRow?.expectedResults ?? []) {
@@ -73,6 +73,17 @@ export default function Annotation() {
 
   // Active result tab (the single switch point for evidence + scoring object).
   const [activeResultId, setActiveResultId] = useState<string>(caseRow?.expectedResults[0]?.resultId ?? "");
+
+  // Reset state when navigating to a new case
+  if (caseRow && caseRow.caseId !== currentCaseId) {
+    setCurrentCaseId(caseRow.caseId);
+    const init: Record<string, { scores: Record<string, number>; reasons: Record<string, string>; skips: Record<string, string>; problemType?: ProblemType }> = {};
+    for (const er of caseRow.expectedResults) {
+      init[er.resultId] = { scores: {}, reasons: {}, skips: {} };
+    }
+    setState(init);
+    setActiveResultId(caseRow.expectedResults[0]?.resultId ?? "");
+  }
 
   if (!caseRow) {
     return (
@@ -89,29 +100,9 @@ export default function Annotation() {
     viewOnly ||
     (role !== "C" && !!flow?.finalizedBaseline);
 
-  // QC reference: C sees the FINALIZED result (拉齐后的定稿 / Normal 的 A 定稿),
-  // not the raw A/B answers. No time ordering — the reference box always shows,
-  // but only carries values once a Finalized Baseline exists:
-  //   - Normal: A submitted → baseline exists → show values.
-  //   - Back-to-Back reconciled (or A/B auto-agreed) → baseline exists → show.
-  //   - Back-to-Back not reconciled yet / A has no answer → no baseline → all "—".
-  const refValue = (round: RoundResult | undefined, resultId: string, dimKey: string): string => {
-    const s = round?.results?.[resultId];
-    if (!s) return "—";
-    if (s.skips && s.skips[dimKey] !== undefined) return "Skip";
-    return s.scores[dimKey] !== undefined ? String(s.scores[dimKey]) : "—";
-  };
+  // QC reference lives in the top-right summary block. It always exists for C,
+  // and stays as dashes until a Finalized Baseline is available.
   const showAbRef = role === "C";
-  const abRefLine = (resultId: string, dimKey: string) => {
-    if (!showAbRef) return null;
-    // Only the finalized (reconciled / Normal-A) result is shown;未定稿则全横杠。
-    const v = flow?.finalizedBaseline ? refValue(flow.finalizedBaseline, resultId, dimKey) : "—";
-    return (
-      <p className="mb-1 font-mono text-[11px] text-muted">
-        定稿参考={v}
-      </p>
-    );
-  };
 
   const setScore = (rid: string, dimKey: string, v: number) =>
     setState((prev) => {
@@ -200,9 +191,31 @@ export default function Annotation() {
   const activeResult = caseRow.expectedResults.find((er) => er.resultId === activeResultId) ?? caseRow.expectedResults[0];
   const activeGroup = resultGroupOf(activeResult);
   const activeEvidence = evidenceKindOf(activeGroup);
-  const evidenceThread = activeEvidence === "TICKET" ? getTicketThread() : getConversation(caseRow.caseId);
-  const st = state[activeResult.resultId];
+  
+  // Filter nextCase to only include cases this user is responsible for in the current role.
+  const myCases = !caseRow ? [] : cases.filter((c) => {
+    if (c.taskId !== caseRow.taskId) return false;
+    const f = flows.find((x) => x.caseId === c.caseId);
+    if (!f) return false;
+    if (role === "A") return samePerson(currentEmail, f.aAssignee) || samePerson(currentEmail, f.aResult?.by);
+    if (role === "B") return samePerson(currentEmail, f.bAssignee) || samePerson(currentEmail, f.bResult?.by);
+    if (role === "C") return samePerson(currentEmail, f.cReviewer);
+    return false;
+  });
+
+  const currentIndex = myCases.findIndex((c) => c.caseId === caseRow?.caseId);
+  const prevCase = currentIndex > 0 ? myCases[currentIndex - 1] : undefined;
+  const nextCase = currentIndex >= 0 && currentIndex < myCases.length - 1 ? myCases[currentIndex + 1] : undefined;
+
+  const st = state[activeResult.resultId] ?? { scores: {}, reasons: {}, skips: {} };
   const preview = computeResultScore(st.scores, dims, weights);
+  const qcReference = flow?.finalizedBaseline?.results?.[activeResult.resultId];
+  const mockTitle = activeEvidence === "TICKET" ? "A ticket page mock" : "A session page mock";
+  const qcReferenceCards = [
+    { label: "SQS", value: qcReference ? qcReference.sqsAvg.toFixed(2) : "—" },
+    { label: "User Satisfaction", value: qcReference ? qcReference.uefTotal.toFixed(2) : "—" },
+    { label: "User Experience Score", value: qcReference ? qcReference.uxs.toFixed(2) : "—" },
+  ];
 
   return (
     <Layout>
@@ -242,17 +255,27 @@ export default function Annotation() {
       <div className="flex min-h-[calc(100vh-8.5rem)]">
         {/* Left 60% evidence — follows the active tab. */}
         <div className="w-3/5 border-r border-line p-5">
-          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-ink">
-            Evidence · {activeEvidence === "TICKET" ? "Ticket" : "Conversation"}
-            <Badge tone="neutral">{caseRow.knowledgeSource}</Badge>
-            <span className="font-mono text-xs text-muted">
-              {activeEvidence === "TICKET" ? (caseRow.ticketId ?? "—") : caseRow.sessionId}
-            </span>
+          <div className="flex h-full flex-col rounded-xl border border-line bg-page">
+            <div className="border-b border-line px-4 py-3">
+              <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-ink">
+                <span>{mockTitle}</span>
+                <Badge tone="neutral">{caseRow.knowledgeSource}</Badge>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-subtle">
+                <span>Language {caseRow.language}</span>
+                <span>Region {caseRow.regionCode}</span>
+                <span>{caseRow.annotationCategory}</span>
+                <span className="font-mono text-[11px] text-muted">
+                  {activeEvidence === "TICKET" ? (caseRow.ticketId ?? "—") : caseRow.sessionId}
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-1 items-start justify-start p-4">
+              <div className="rounded-lg border border-dashed border-line/80 bg-white/70 px-4 py-3 text-sm font-medium text-subtle">
+                {mockTitle}
+              </div>
+            </div>
           </div>
-          <div className="mb-3 rounded-lg border border-line bg-page px-3 py-2 text-xs text-subtle">
-            Language {caseRow.language} · Region {caseRow.regionCode} · {caseRow.annotationCategory}
-          </div>
-          <ChatThread messages={evidenceThread} />
         </div>
 
         {/* Right 40% scoring — the active result's single card. */}
@@ -262,9 +285,23 @@ export default function Annotation() {
               <p className="text-sm font-semibold text-ink">{activeGroup} Result</p>
               <p className="text-xs text-subtle">{caseRow.expectedResults.length} 个结果 · {activeResult.entryMode}</p>
             </div>
-            <span className="font-mono text-xs text-brand">
-              SQS {preview.sqsAvg.toFixed(2)} · UEF {preview.uefTotal.toFixed(2)} · UXS {preview.uxs.toFixed(2)}
-            </span>
+            {showAbRef ? (
+              <div className="w-[320px]">
+                <p className="mb-2 text-right text-[10px] font-semibold uppercase tracking-wide text-subtle">QC Reference</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {qcReferenceCards.map((item) => (
+                    <div key={item.label} className="rounded-lg border border-line bg-white px-2 py-2 text-center">
+                      <p className="text-[10px] font-medium leading-tight text-subtle">{item.label}</p>
+                      <p className="mt-1 font-mono text-xs font-semibold text-brand">{item.value}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <span className="font-mono text-xs text-brand">
+                SQS {preview.sqsAvg.toFixed(2)} · User Satisfaction {preview.uefTotal.toFixed(2)} · User Experience Score {preview.uxs.toFixed(2)}
+              </span>
+            )}
           </div>
 
           <div className="pb-3">
@@ -295,7 +332,6 @@ export default function Annotation() {
                       </div>
                     </div>
                   )}
-                  {abRefLine(activeResult.resultId, d.key)}
                   <ScoreRow
                     label={isResp ? `${d.dimension}（选填）` : d.dimension}
                     hint={
@@ -323,14 +359,13 @@ export default function Annotation() {
               );
             })}
 
-            {/* UEF dimension */}
+            {/* User Satisfaction dimension */}
             {uefDims.map((d) => {
               const skipped = st.skips[d.key] !== undefined;
               return (
                 <div key={d.key} className="px-4 pt-3">
-                  {abRefLine(activeResult.resultId, d.key)}
                   <ScoreRow
-                    label={`UEF · ${d.dimension}`}
+                    label={`User Satisfaction · ${d.dimension}`}
                     options={d.options}
                     value={st.scores[d.key] ?? null}
                     onChange={(v) => setScore(activeResult.resultId, d.key, v)}
@@ -355,18 +390,68 @@ export default function Annotation() {
               <span className="text-xs text-subtle">
                 {allComplete ? "全部结果已完成，可提交" : "请完成全部结果卡（含 Problem Type）后提交"}
               </span>
-              <button
-                disabled={!allComplete}
-                onClick={buildAndSubmit}
-                className="rounded-md bg-brand px-5 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-page disabled:text-subtle"
-              >
-                Submit {roleLabelCN}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  disabled={!prevCase}
+                  onClick={() => {
+                    if (!prevCase) return;
+                    navigate(`/annotate/${prevCase.sessionId}?role=${role}${viewOnly ? "&view=1" : ""}`);
+                  }}
+                  className="rounded-md border border-line bg-white px-4 py-2 text-sm font-medium text-ink hover:bg-page disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Prev
+                </button>
+                <button
+                  disabled={!allComplete}
+                  onClick={buildAndSubmit}
+                  className="rounded-md bg-brand px-5 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-page disabled:text-subtle"
+                >
+                  Submit {roleLabelCN}
+                </button>
+                <button
+                  onClick={() => {
+                    if (nextCase) {
+                      navigate(`/annotate/${nextCase.sessionId}?role=${role}${viewOnly ? "&view=1" : ""}`);
+                    } else {
+                      alert("已完成该 task 的所有评注任务！");
+                      navigate(`/home`);
+                    }
+                  }}
+                  className="rounded-md border border-line bg-white px-4 py-2 text-sm font-medium text-ink hover:bg-page disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
             </div>
           )}
           {readOnly && (
-            <div className="px-4 py-4 text-center text-xs text-subtle">
-              只读视图（查看 / 结果已冻结）。当前账号：{shortNameOf(currentEmail)}
+            <div className="sticky bottom-0 flex items-center justify-between border-t border-line bg-white px-4 py-3 text-xs text-subtle">
+              <span>只读视图（查看 / 结果已冻结）。当前账号：{shortNameOf(currentEmail)}</span>
+              <div className="flex items-center gap-2">
+                <button
+                  disabled={!prevCase}
+                  onClick={() => {
+                    if (!prevCase) return;
+                    navigate(`/annotate/${prevCase.sessionId}?role=${role}${viewOnly ? "&view=1" : ""}`);
+                  }}
+                  className="rounded-md border border-line bg-white px-4 py-2 text-sm font-medium text-ink hover:bg-page disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Prev
+                </button>
+                <button
+                  onClick={() => {
+                    if (nextCase) {
+                      navigate(`/annotate/${nextCase.sessionId}?role=${role}${viewOnly ? "&view=1" : ""}`);
+                    } else {
+                      alert("已完成该 task 的所有评注任务！");
+                      navigate(`/home`);
+                    }
+                  }}
+                  className="rounded-md border border-line bg-white px-4 py-2 text-sm font-medium text-ink hover:bg-page disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
             </div>
           )}
         </div>

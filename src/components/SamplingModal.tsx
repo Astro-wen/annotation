@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import { X, ShieldCheck } from "lucide-react";
-import { USER_OPTIONS } from "@/lib/currentUser";
 import type { SamplingConfig } from "@/store/sessionStore";
 
 export default function SamplingModal({
@@ -11,10 +10,8 @@ export default function SamplingModal({
   alreadySampledOf,
   /** assignment-ready cases assignable to the chosen C (anti-self-review applied) */
   availableOf,
-  /** anti-self-review excluded count for chosen C (display) */
-  excludedOf,
-  /** Task-level anti-self-review: whether the chosen C is any A/B in this task */
-  cIsTaskAB,
+  qaOptions,
+  cReviewerOptions,
   onClose,
   onConfirm,
 }: {
@@ -23,8 +20,8 @@ export default function SamplingModal({
   effectiveOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
   alreadySampledOf: (scope: "all_qas" | "by_qa", qaEmail?: string) => number;
   availableOf: (scope: "all_qas" | "by_qa", qaEmail: string | undefined, cReviewer: string | undefined) => number;
-  excludedOf: (scope: "all_qas" | "by_qa", qaEmail: string | undefined, cReviewer: string | undefined) => number;
-  cIsTaskAB: (cReviewer: string | undefined) => boolean;
+  qaOptions: { email: string; label: string }[];
+  cReviewerOptions: { email: string; label: string }[];
   onClose: () => void;
   onConfirm: (config: SamplingConfig) => void;
 }) {
@@ -39,7 +36,6 @@ export default function SamplingModal({
   const effective = effectiveOf(scope, scopeQa);
   const alreadySampled = alreadySampledOf(scope, scopeQa);
   const available = availableOf(scope, scopeQa, cReviewer || undefined);
-  const excluded = excludedOf(scope, scopeQa, cReviewer || undefined);
 
   // How many cases this action will sample (percentage counts against effective
   // total; absolute is a direct count), capped by what's currently available.
@@ -104,7 +100,7 @@ export default function SamplingModal({
                 className="mt-2 h-10 w-full rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
               >
                 <option value="">Select QA…</option>
-                {USER_OPTIONS.map((u) => (
+                {qaOptions.map((u) => (
                   <option key={u.email} value={u.email}>
                     {u.label}
                   </option>
@@ -160,17 +156,12 @@ export default function SamplingModal({
               className="h-10 w-full rounded-lg border border-line bg-page px-3 text-sm text-ink outline-none focus:border-brand focus:bg-white"
             >
               <option value="">选择复核人…</option>
-              {USER_OPTIONS.map((u) => (
+              {cReviewerOptions.map((u) => (
                 <option key={u.email} value={u.email}>
                   {u.label}
                 </option>
               ))}
             </select>
-            {cReviewer && cIsTaskAB(cReviewer) && excluded > 0 && (
-              <p className="mt-2 rounded-md bg-danger-light px-2 py-1 text-xs text-danger">
-                该标注员在本 Task 已评过 {excluded} 个 case（防自审），仅会分配其未参与过的 case。
-              </p>
-            )}
           </div>
         </div>
 
